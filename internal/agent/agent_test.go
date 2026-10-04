@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
 	"go-reins/internal/backend"
 )
 
@@ -247,8 +251,71 @@ func TestRunApprovedByApprover(t *testing.T) {
 	}
 }
 
-func TestMaxTurnsConfiguration(t *testing.T) {
-	fb := &fakeBackend{reply: backend.ChatResponse{Content: "hello there"}}
+func TestRunLogsToolLifecycle(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL weather {"city":"Berlin"}`},
+		{Content: "It is raining."},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+	a := New(fb, "test-model", "be brief", []Tool{weather}, WithLogger(logger))
+
+	if _, err := a.Run(context.Background(), "weather in Berlin?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	messages := logs.FilterLevelExact(zapcore.InfoLevel)
+	want := []string{"tool call", "final answer"}
+	if messages.Len() != len(want) {
+		t.Fatalf("info log entries = %d, want %d: %v", messages.Len(), len(want), messages.All())
+	}
+	for i, m := range want {
+		if got := messages.All()[i].Message; got != m {
+			t.Errorf("log entry %d = %q, want %q", i, got, m)
+		}
+	}
+
+	call := messages.All()[0]
+	toolLogged := false
+	for _, f := range call.Context {
+		if f.Key == "tool" && f.String == "weather" {
+			toolLogged = true
+		}
+	}
+	if !toolLogged {
+		t.Errorf("tool call log fields missing tool=weather: %v", call.Context)
+	}
+	if entries := logs.FilterLevelExact(zapcore.WarnLevel); entries.Len() != 0 {
+		t.Errorf("warn entries = %d, want 0 in a successful run: %v", entries.Len(), entries.All())
+	}
+}
+
+func TestRunLogsDeniedCall(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL weather {"city":"Berlin"}`},
+		{Content: "No weather for you."},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := zap.New(core)
+	a := New(fb, "test-model", "be brief", []Tool{weather},
+		WithApprover(func(string, string) bool { return false }),
+		WithLogger(logger))
+
+	if _, err := a.Run(context.Background(), "weather in Berlin?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	warns := logs.FilterLevelExact(zapcore.WarnLevel)
+	if warns.Len() != 1 || warns.All()[0].Message != "tool call denied by operator" {
+		t.Errorf("warn entries = %v, want one denial entry", warns.All())
+	}
+}
+
+func TestMaxTurnsConfiguration(t *testing.T) {	fb := &fakeBackend{reply: backend.ChatResponse{Content: "hello there"}}
 
 	if got := New(fb, "test-model", "be brief", nil).maxTurns; got != defaultMaxTurns {
 		t.Errorf("default maxTurns = %d, want %d", got, defaultMaxTurns)

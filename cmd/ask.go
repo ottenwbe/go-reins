@@ -9,11 +9,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
 	"go-reins/internal/backend/llamacpp"
 	"go-reins/internal/backend/ollama"
+	"go-reins/internal/logging"
 	"go-reins/internal/tools/shell"
 )
 
@@ -36,6 +38,12 @@ func init() {
 }
 
 func runAsk(cmd *cobra.Command, args []string) error {
+	logger, err := logging.New(viper.GetString("log-level"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = logger.Sync() }()
+
 	b, err := newBackend()
 	if err != nil {
 		return err
@@ -46,8 +54,15 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
 	}
 
+	logger.Info("starting ask",
+		zap.String("backend", b.Name()),
+		zap.String("model", model))
+
 	tools := []agent.Tool{shell.New()}
-	a := agent.New(b, model, defaultSystemPrompt, tools, agent.WithApprover(confirmApprover()))
+	a := agent.New(b, model, defaultSystemPrompt, tools,
+		agent.WithApprover(confirmApprover()),
+		agent.WithLogger(logger),
+	)
 
 	res, err := a.Run(context.Background(), args[0])
 	if err != nil {

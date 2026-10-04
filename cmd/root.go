@@ -35,6 +35,7 @@ func init() {
 	rootCmd.PersistentFlags().Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
 	rootCmd.PersistentFlags().Bool("history", false, "print the full conversation history (with roles) after the answer")
 	rootCmd.PersistentFlags().Bool("turns", false, "print how many turns the run took")
+	rootCmd.PersistentFlags().String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
 
 	_ = viper.BindPFlag("backend", rootCmd.PersistentFlags().Lookup("backend"))
 	_ = viper.BindPFlag("url", rootCmd.PersistentFlags().Lookup("url"))
@@ -42,6 +43,7 @@ func init() {
 	_ = viper.BindPFlag("yes", rootCmd.PersistentFlags().Lookup("yes"))
 	_ = viper.BindPFlag("history", rootCmd.PersistentFlags().Lookup("history"))
 	_ = viper.BindPFlag("turns", rootCmd.PersistentFlags().Lookup("turns"))
+	_ = viper.BindPFlag("log-level", rootCmd.PersistentFlags().Lookup("log-level"))
 }
 
 func initConfig() {
