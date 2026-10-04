@@ -28,6 +28,8 @@ go-reins/
     │   └── llamacpp/llamacpp.go   # adapter: OpenAI-style /v1/chat/completions
     ├── tools/
     │   └── shell/shell.go         # tool: run a shell command, return its output
+    ├── logging/
+    │   └── logging.go             # zap logger setup, level from --log-level
     └── agent/
         └── agent.go               # the agent loop + Tool and Approver interfaces
 ```
@@ -58,6 +60,90 @@ Key design decisions:
   status is an observation, not a failure.
 - **Configuration** follows viper's precedence chain: CLI flags >
   environment (`GO_REINS_*`) > config file > defaults.
+- **Logging** uses zap (`internal/logging`): one logger per run,
+  console format on stderr, level via `--log-level`. The agent logs
+  turns at debug, tool calls at info, and denials/failures at warn;
+  stdout stays reserved for the answer.
+
+### Component seams
+
+Every extension point is a small interface with one implementation
+per variant. The agent package depends on none of the concrete
+implementations — `cmd` wires them together:
+
+| Seam | Interface | Implementations |
+| --- | --- | --- |
+| Inference | `backend.Backend` | `ollama`, `llamacpp` |
+| Capability | `agent.Tool` | `tools/shell` |
+| Permission | `agent.Approver` | interactive prompt in `cmd` (nil = allow) |
+| Observability | `*zap.Logger` | `internal/logging` (no-op default) |
+
+### The agent loop
+
+One `Run` is a bounded loop of backend round trips ("turns"). The
+model's reply decides how each turn ends:
+
+```
+system prompt (base + tool docs)   user prompt
+        │                               │
+        └───────────┬───────────────────┘
+                    ▼
+          ┌──────────────────────┐
+          │  send history to     │◄───────────┐
+          │  backend             │             │
+          └──────────┬───────────┘             │
+                     ▼                         │
+        reply contains TOOLCALL line?          │
+          ├─ no  → final answer, done          │
+          └─ yes                                  │
+                ▼                               │
+        approver gate                           │
+          ├─ denied → observation               │
+          └─ allowed → execute tool             │
+                       ▼                        │
+        append TOOLRESULT as user message ─────┤
+                                                │
+        next turn (capped at maxTurns,         │
+        default 8; exceeding it fails the run) ┘
+```
+
+Deliberate loop properties:
+
+- **Errors are observations, not crashes.** Unknown tools, tool
+  failures, and denied calls are fed back as `TOOLRESULT` text so the
+  model can recover — retry, pick another path, or answer without the
+  tool. The run itself only fails on backend errors or exhausting
+  `maxTurns`.
+- **The protocol is text, not native tool calling.** The agent owns
+  the `TOOLCALL`/`TOOLRESULT` convention, so backends stay dumb
+  message-in/message-out adapters and the same loop works on any
+  model that can follow prompt instructions. The trade-off: small
+  models may break the format. Native calling (Ollama `tools`,
+  OpenAI `tool_calls`) is a possible later step; it would live in the
+  adapters and extend `backend.ChatRequest`/`ChatResponse`.
+- **One tool call per turn.** The first `TOOLCALL` line in a reply is
+  executed; the reply is otherwise treated as final. Multi-call and
+  parallel execution are left open deliberately.
+- **`Run` is stateless.** History lives for the duration of the call
+  and is returned in `RunResult` for review; calling `Run` twice never
+  shares state.
+
+### Package dependencies
+
+```
+main
+ └── cmd          wiring: cobra/viper, backend factory, tool registry,
+      │           approver and logger installation
+      ├── agent         the loop; imports backend (types only) and zap
+      ├── backend/ollama, backend/llamacpp   adapters, picked by cmd
+      ├── tools/shell   implements agent.Tool, registered by cmd
+      └── logging       builds the *zap.Logger cmd passes to agent
+```
+
+Dependencies point inward: `agent` knows only the `backend.Backend`
+interface and its message types — never which adapter is behind it,
+and never a concrete tool. `cmd` is the only place that assembles
+concrete implementations, which is what keeps the seams swappable.
 
 ## Requirements
 
@@ -103,6 +189,7 @@ Use the llama.cpp backend:
 | `--yes` | `GO_REINS_YES` | `false` | auto-approve tool calls (no confirmation prompt) |
 | `--history` | `GO_REINS_HISTORY` | `false` | print the full conversation after the answer |
 | `--turns` | `GO_REINS_TURNS` | `false` | print how many turns the run took |
+| `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
 | `--config` | — | `$HOME/.go-reins.yaml` | config file path |
 
 Config file example (`~/.go-reins.yaml`):
