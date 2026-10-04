@@ -36,10 +36,13 @@ Key design decisions:
   relies on. Ollama and llama.cpp are two adapters over one three-method
   interface (`Name`, `Chat`). Adding a cloud API later means writing one new
   package — nothing else changes.
-- **`internal/agent`** already has the reason → act → observe loop with a turn
-  counter, but the current version returns after one round trip. The `Tool`
-  interface is defined but unused; it is the slot where tool dispatch will
-  hook in next.
+- **`internal/agent`** runs a reason → act → observe loop with a
+  configurable turn cap (`WithMaxTurns`). Tool calling uses a text
+  protocol owned by the agent: registered tools are announced in the
+  system prompt, the model requests one with a `TOOLCALL <name>
+  <json>` line, and the observation returns as a `TOOLRESULT` user
+  message. Tool errors and unknown tools become observations, so the
+  model can recover instead of the run failing.
 - **Configuration** follows viper's precedence chain: CLI flags >
   environment (`GO_REINS_*`) > config file > defaults.
 
@@ -98,8 +101,10 @@ Tests cover the agent loop (against a fake backend) and both adapters
 
 ## Roadmap
 
-- [ ] Tool calling: parse tool-call requests from the model reply and
-      dispatch to `Tool.Execute`, appending observations to the history
+- [x] Tool calling: text protocol (`TOOLCALL`/`TOOLRESULT`), dispatch
+      to `Tool.Execute`, observations appended to the history
+- [ ] Wire a first real tool into `go-reins ask` (e.g. current time,
+      shell command) and a `--max-turns` flag
 - [ ] Streaming responses
 - [ ] Interactive REPL mode
 - [ ] More backends (OpenAI-compatible cloud APIs)
