@@ -20,7 +20,7 @@ go-reins/
 ├── main.go                        # entry point, just calls cmd.Execute()
 ├── cmd/
 │   ├── root.go                    # cobra root + viper (config file, env, flags)
-│   └── ask.go                     # `go-reins ask "prompt"` + backend factory
+│   └── run.go                     # `go-reins run "task"` + backend factory
 └── internal/
     ├── backend/
     │   ├── backend.go             # the Backend interface — the swappable seam
@@ -48,10 +48,10 @@ Key design decisions:
   message. Tool errors and unknown tools become observations, so the
   model can recover instead of the run failing. `Run` reports how many
   turns it used and returns the full conversation history for review
-  (`RunResult`); `go-reins ask` prints the turn count and offers
+  (`RunResult`); `go-reins run` prints the turn count and offers
   `--history` to dump the transcript.
 - **Human in the loop**: an `Approver` gate shows every tool call
-  before execution. `go-reins ask` prompts for confirmation on each
+  before execution. `go-reins run` prompts for confirmation on each
   call unless `--yes` is set. A denied call is fed back to the model
   as an observation.
 - **`internal/tools/shell`** runs a command via `sh -c` with a 30s
@@ -160,23 +160,23 @@ go build -o go-reins .
 
 ## Usage
 
-Send a single prompt through the agent:
+Run a single task through the agent:
 
 ```sh
-./go-reins ask --model llama3.2 "explain the CAP theorem in 3 sentences"
+./go-reins run --model llama3.2 "explain the CAP theorem in 3 sentences"
 ```
 
 Give it a task that needs the machine (each tool call prompts for
 confirmation unless `--yes` is set):
 
 ```sh
-./go-reins ask --model llama3.2 "figure out which system you run on"
+./go-reins run --model llama3.2 "figure out which system you run on"
 ```
 
 Use the llama.cpp backend:
 
 ```sh
-./go-reins ask --backend llamacpp --model qwen2.5 "hello"
+./go-reins run --backend llamacpp --model qwen2.5 "hello"
 ```
 
 ### Flags and configuration

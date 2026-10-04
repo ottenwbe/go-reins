@@ -22,22 +22,23 @@ import (
 const defaultSystemPrompt = `You are a helpful assistant running inside a small agent harness.
 Answer concisely and accurately.`
 
-var askCmd = &cobra.Command{
-	Use:   "ask [prompt]",
-	Short: "Send a single prompt to the agent and print the answer",
-	Long: `ask sends the given prompt through the agent loop and prints the
-final answer. Example:
+var runCmd = &cobra.Command{
+	Use:   "run [task]",
+	Short: "Run a task through the agent loop and print the result",
+	Long: `run sends the given task through the agent loop and prints the
+final answer. The agent may call tools (subject to approval) along the
+way. Example:
 
-	go-reins ask --model llama3.2 "explain the CAP theorem in 3 sentences"`,
+	go-reins run --model llama3.2 "figure out which system you run on"`,
 	Args: cobra.ExactArgs(1),
-	RunE: runAsk,
+	RunE: runTask,
 }
 
 func init() {
-	rootCmd.AddCommand(askCmd)
+	rootCmd.AddCommand(runCmd)
 }
 
-func runAsk(cmd *cobra.Command, args []string) error {
+func runTask(cmd *cobra.Command, args []string) error {
 	logger, err := logging.New(viper.GetString("log-level"))
 	if err != nil {
 		return err
@@ -54,7 +55,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
 	}
 
-	logger.Info("starting ask",
+	logger.Info("starting run",
 		zap.String("backend", b.Name()),
 		zap.String("model", model))
 
