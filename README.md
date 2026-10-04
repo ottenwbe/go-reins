@@ -26,8 +26,10 @@ go-reins/
     │   ├── backend.go             # the Backend interface — the swappable seam
     │   ├── ollama/ollama.go       # adapter: native /api/chat
     │   └── llamacpp/llamacpp.go   # adapter: OpenAI-style /v1/chat/completions
+    ├── tools/
+    │   └── shell/shell.go         # tool: run a shell command, return its output
     └── agent/
-        └── agent.go               # the agent loop + Tool interface
+        └── agent.go               # the agent loop + Tool and Approver interfaces
 ```
 
 Key design decisions:
@@ -42,7 +44,18 @@ Key design decisions:
   system prompt, the model requests one with a `TOOLCALL <name>
   <json>` line, and the observation returns as a `TOOLRESULT` user
   message. Tool errors and unknown tools become observations, so the
-  model can recover instead of the run failing.
+  model can recover instead of the run failing. `Run` reports how many
+  turns it used and returns the full conversation history for review
+  (`RunResult`); `go-reins ask` prints the turn count and offers
+  `--history` to dump the transcript.
+- **Human in the loop**: an `Approver` gate shows every tool call
+  before execution. `go-reins ask` prompts for confirmation on each
+  call unless `--yes` is set. A denied call is fed back to the model
+  as an observation.
+- **`internal/tools/shell`** runs a command via `sh -c` with a 30s
+  timeout and caps its output, so the agent can inspect the machine
+  it runs on ("figure out which system you run on"). A non-zero exit
+  status is an observation, not a failure.
 - **Configuration** follows viper's precedence chain: CLI flags >
   environment (`GO_REINS_*`) > config file > defaults.
 
@@ -67,6 +80,13 @@ Send a single prompt through the agent:
 ./go-reins ask --model llama3.2 "explain the CAP theorem in 3 sentences"
 ```
 
+Give it a task that needs the machine (each tool call prompts for
+confirmation unless `--yes` is set):
+
+```sh
+./go-reins ask --model llama3.2 "figure out which system you run on"
+```
+
 Use the llama.cpp backend:
 
 ```sh
@@ -80,6 +100,9 @@ Use the llama.cpp backend:
 | `--backend` | `GO_REINS_BACKEND` | `ollama` | `ollama` or `llamacpp` |
 | `--model` | `GO_REINS_MODEL` | — | model name, e.g. `llama3.2` |
 | `--url` | `GO_REINS_URL` | per-backend default | backend base URL |
+| `--yes` | `GO_REINS_YES` | `false` | auto-approve tool calls (no confirmation prompt) |
+| `--history` | `GO_REINS_HISTORY` | `false` | print the full conversation after the answer |
+| `--turns` | `GO_REINS_TURNS` | `false` | print how many turns the run took |
 | `--config` | — | `$HOME/.go-reins.yaml` | config file path |
 
 Config file example (`~/.go-reins.yaml`):
@@ -98,13 +121,17 @@ go test ./...
 
 Tests cover the agent loop (against a fake backend) and both adapters
 (against `httptest` mock servers), so no running backend is needed.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
+`go vet`, `go build`, and `go test` on every push and pull request,
+using the Go version pinned in `go.mod`.
 
 ## Roadmap
 
 - [x] Tool calling: text protocol (`TOOLCALL`/`TOOLRESULT`), dispatch
       to `Tool.Execute`, observations appended to the history
-- [ ] Wire a first real tool into `go-reins ask` (e.g. current time,
-      shell command) and a `--max-turns` flag
+- [x] Shell tool + human in the loop: tool calls shown for
+      confirmation unless `--yes` is set
+- [ ] `--max-turns` flag
 - [ ] Streaming responses
 - [ ] Interactive REPL mode
 - [ ] More backends (OpenAI-compatible cloud APIs)

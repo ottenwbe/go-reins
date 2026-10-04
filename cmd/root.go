@@ -32,10 +32,16 @@ func init() {
 	rootCmd.PersistentFlags().String("backend", "ollama", "inference backend: ollama or llamacpp")
 	rootCmd.PersistentFlags().String("url", "", "backend base URL (defaults: ollama http://localhost:11434, llamacpp http://localhost:8080)")
 	rootCmd.PersistentFlags().String("model", "", "model name, e.g. llama3.2 or qwen2.5")
+	rootCmd.PersistentFlags().Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
+	rootCmd.PersistentFlags().Bool("history", false, "print the full conversation history (with roles) after the answer")
+	rootCmd.PersistentFlags().Bool("turns", false, "print how many turns the run took")
 
 	_ = viper.BindPFlag("backend", rootCmd.PersistentFlags().Lookup("backend"))
 	_ = viper.BindPFlag("url", rootCmd.PersistentFlags().Lookup("url"))
 	_ = viper.BindPFlag("model", rootCmd.PersistentFlags().Lookup("model"))
+	_ = viper.BindPFlag("yes", rootCmd.PersistentFlags().Lookup("yes"))
+	_ = viper.BindPFlag("history", rootCmd.PersistentFlags().Lookup("history"))
+	_ = viper.BindPFlag("turns", rootCmd.PersistentFlags().Lookup("turns"))
 }
 
 func initConfig() {

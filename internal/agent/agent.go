@@ -39,6 +39,12 @@ type Tool interface {
 	Execute(ctx context.Context, args string) (string, error)
 }
 
+// Approver gates every tool call before it runs — the human in the
+// loop. Returning false denies the call; the model receives the
+// denial as an observation and can react (ask the user, try another
+// way, or answer without the tool).
+type Approver func(name, args string) bool
+
 // Agent owns the conversation with a single backend.
 type Agent struct {
 	backend  backend.Backend
@@ -46,6 +52,7 @@ type Agent struct {
 	system   string
 	tools    []Tool
 	byName   map[string]Tool
+	approver Approver
 	maxTurns int
 }
 
@@ -59,6 +66,15 @@ func WithMaxTurns(n int) Option {
 		if n >= 1 {
 			a.maxTurns = n
 		}
+	}
+}
+
+// WithApprover installs a human-in-the-loop gate: every tool call is
+// presented to the approver before execution. A nil approver allows
+// everything.
+func WithApprover(ap Approver) Option {
+	return func(a *Agent) {
+		a.approver = ap
 	}
 }
 
@@ -82,11 +98,20 @@ func New(b backend.Backend, model, system string, tools []Tool, opts ...Option) 
 	return a
 }
 
+// RunResult captures the outcome of a single Run: the final answer,
+// how many backend round trips it took, and the full conversation
+// history for review.
+type RunResult struct {
+	Answer  string
+	Turns   int
+	History []backend.Message
+}
+
 // Run processes a user prompt through the agent loop and returns the
 // final assistant answer. A reply without a tool call is final; a
 // reply with a TOOLCALL line executes the tool, appends the
 // observation to the history, and takes another turn.
-func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
+func (a *Agent) Run(ctx context.Context, prompt string) (RunResult, error) {
 	history := []backend.Message{
 		{Role: backend.RoleSystem, Content: a.system + a.toolDocs()},
 		{Role: backend.RoleUser, Content: prompt},
@@ -98,7 +123,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 			Messages: history,
 		})
 		if err != nil {
-			return "", fmt.Errorf("agent: turn %d: %w", turn, err)
+			return RunResult{}, fmt.Errorf("agent: turn %d: %w", turn, err)
 		}
 
 		history = append(history, backend.Message{
@@ -108,7 +133,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 
 		name, args, ok := parseToolCall(resp.Content)
 		if !ok {
-			return resp.Content, nil
+			return RunResult{Answer: resp.Content, Turns: turn, History: history}, nil
 		}
 
 		observation := a.executeTool(ctx, name, args)
@@ -118,7 +143,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (string, error) {
 		})
 	}
 
-	return "", fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
+	return RunResult{}, fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
 }
 
 // executeTool runs one tool call and returns the observation to feed
@@ -133,6 +158,11 @@ func (a *Agent) executeTool(ctx context.Context, name, args string) string {
 		}
 		return fmt.Sprintf("unknown tool %q, available tools: %s",
 			name, strings.Join(names, ", "))
+	}
+
+	if a.approver != nil && !a.approver(name, args) {
+		return fmt.Sprintf("tool call %q with args %s was not approved by the operator; "+
+			"ask the user, try a different way, or answer without the tool", name, args)
 	}
 
 	observation, err := tool.Execute(ctx, args)

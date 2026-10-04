@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -11,6 +14,7 @@ import (
 	"go-reins/internal/backend"
 	"go-reins/internal/backend/llamacpp"
 	"go-reins/internal/backend/ollama"
+	"go-reins/internal/tools/shell"
 )
 
 const defaultSystemPrompt = `You are a helpful assistant running inside a small agent harness.
@@ -42,15 +46,57 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
 	}
 
-	a := agent.New(b, model, defaultSystemPrompt, nil)
+	tools := []agent.Tool{shell.New()}
+	a := agent.New(b, model, defaultSystemPrompt, tools, agent.WithApprover(confirmApprover()))
 
-	answer, err := a.Run(context.Background(), args[0])
+	res, err := a.Run(context.Background(), args[0])
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(answer)
+	fmt.Println(res.Answer)
+	if viper.GetBool("turns") {
+		fmt.Fprintf(os.Stderr, "\nrun finished in %d turn(s)\n", res.Turns)
+	}
+	if viper.GetBool("history") {
+		printHistory(res.History)
+	}
 	return nil
+}
+
+// printHistory dumps the conversation for review: one block per
+// message, labeled with its role.
+func printHistory(history []backend.Message) {
+	fmt.Fprintln(os.Stderr, "\n--- conversation history ---")
+	for i, m := range history {
+		fmt.Fprintf(os.Stderr, "\n[%d] %s\n%s\n", i+1, m.Role, m.Content)
+	}
+}
+
+// confirmApprover is the human in the loop: every tool call is shown
+// on stderr and must be confirmed. It returns nil (allow everything)
+// when --yes is set.
+func confirmApprover() agent.Approver {
+	if viper.GetBool("yes") {
+		return nil
+	}
+	return func(name, args string) bool {
+		fmt.Fprintf(os.Stderr, "\ntool call: %s %s\n", name, args)
+		fmt.Fprint(os.Stderr, "allow? [y/N]: ")
+
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			fmt.Fprintln(os.Stderr, "(could not read confirmation, defaulting to deny)")
+			return false
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return true
+		default:
+			fmt.Fprintln(os.Stderr, "denied")
+			return false
+		}
+	}
 }
 
 // newBackend builds the backend selected by config, flag, or env.
