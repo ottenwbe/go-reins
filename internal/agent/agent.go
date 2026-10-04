@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"go-reins/internal/backend"
 )
 
@@ -53,6 +55,7 @@ type Agent struct {
 	tools    []Tool
 	byName   map[string]Tool
 	approver Approver
+	logger   *zap.Logger
 	maxTurns int
 }
 
@@ -78,6 +81,17 @@ func WithApprover(ap Approver) Option {
 	}
 }
 
+// WithLogger installs a logger for the agent loop: turns at debug,
+// tool calls at info, denials and failures at warn. A nil logger
+// leaves the default no-op logger in place.
+func WithLogger(l *zap.Logger) Option {
+	return func(a *Agent) {
+		if l != nil {
+			a.logger = l
+		}
+	}
+}
+
 // New builds an agent over the given backend. Registered tools are
 // announced to the model via the text tool-call protocol.
 func New(b backend.Backend, model, system string, tools []Tool, opts ...Option) *Agent {
@@ -87,6 +101,7 @@ func New(b backend.Backend, model, system string, tools []Tool, opts ...Option) 
 		system:   system,
 		tools:    tools,
 		byName:   make(map[string]Tool, len(tools)),
+		logger:   zap.NewNop(),
 		maxTurns: defaultMaxTurns,
 	}
 	for _, t := range tools {
@@ -118,11 +133,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) (RunResult, error) {
 	}
 
 	for turn := 1; turn <= a.maxTurns; turn++ {
+		a.logger.Debug("agent turn", zap.Int("turn", turn), zap.Int("messages", len(history)))
+
 		resp, err := a.backend.Chat(ctx, backend.ChatRequest{
 			Model:    a.model,
 			Messages: history,
 		})
 		if err != nil {
+			a.logger.Warn("backend chat failed", zap.Int("turn", turn), zap.Error(err))
 			return RunResult{}, fmt.Errorf("agent: turn %d: %w", turn, err)
 		}
 
@@ -133,10 +151,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) (RunResult, error) {
 
 		name, args, ok := parseToolCall(resp.Content)
 		if !ok {
+			a.logger.Info("final answer", zap.Int("turns", turn))
 			return RunResult{Answer: resp.Content, Turns: turn, History: history}, nil
 		}
 
+		a.logger.Info("tool call", zap.String("tool", name), zap.String("args", args))
+
 		observation := a.executeTool(ctx, name, args)
+		a.logger.Debug("tool result", zap.String("tool", name), zap.Int("bytes", len(observation)))
 		history = append(history, backend.Message{
 			Role:    backend.RoleUser,
 			Content: toolResultLine + ": " + observation,
@@ -152,24 +174,35 @@ func (a *Agent) Run(ctx context.Context, prompt string) (RunResult, error) {
 func (a *Agent) executeTool(ctx context.Context, name, args string) string {
 	tool, ok := a.byName[name]
 	if !ok {
-		names := make([]string, 0, len(a.byName))
-		for n := range a.byName {
-			names = append(names, n)
-		}
+		names := a.toolNames()
+		a.logger.Warn("unknown tool requested",
+			zap.String("tool", name), zap.Strings("available", names))
 		return fmt.Sprintf("unknown tool %q, available tools: %s",
 			name, strings.Join(names, ", "))
 	}
 
 	if a.approver != nil && !a.approver(name, args) {
+		a.logger.Warn("tool call denied by operator",
+			zap.String("tool", name), zap.String("args", args))
 		return fmt.Sprintf("tool call %q with args %s was not approved by the operator; "+
 			"ask the user, try a different way, or answer without the tool", name, args)
 	}
 
 	observation, err := tool.Execute(ctx, args)
 	if err != nil {
+		a.logger.Warn("tool failed", zap.String("tool", name), zap.Error(err))
 		return fmt.Sprintf("tool %q failed: %v", name, err)
 	}
 	return observation
+}
+
+// toolNames lists registered tool names in registration order.
+func (a *Agent) toolNames() []string {
+	names := make([]string, 0, len(a.tools))
+	for _, t := range a.tools {
+		names = append(names, t.Name())
+	}
+	return names
 }
 
 // parseToolCall extracts the first TOOLCALL line from a model reply.
