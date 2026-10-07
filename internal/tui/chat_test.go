@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
@@ -23,9 +23,9 @@ func TestChatModelStepFlow(t *testing.T) {
 	m = next.(*chatModel)
 
 	// Typing reaches the input area; enter submits and starts a step.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
 	m = next.(*chatModel)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(*chatModel)
 	if m.state != chatBusy {
 		t.Fatalf("state after submit = %v, want chatBusy", m.state)
@@ -52,7 +52,7 @@ func TestChatModelStepFlow(t *testing.T) {
 	if len(m.history) != 3 {
 		t.Errorf("history length = %d, want 3", len(m.history))
 	}
-	transcript := m.View()
+	transcript := m.View().Content
 	if !strings.Contains(transcript, "the answer") {
 		t.Errorf("answer missing from view: %q", transcript)
 	}
@@ -63,7 +63,7 @@ func TestChatModelStepFlow(t *testing.T) {
 	if m.state != chatReady {
 		t.Errorf("state after step error = %v, want chatReady", m.state)
 	}
-	if !strings.Contains(m.View(), "backend down") {
+	if !strings.Contains(m.View().Content, "backend down") {
 		t.Error("error missing from transcript")
 	}
 }
@@ -80,10 +80,10 @@ func TestChatModelMultilineInput(t *testing.T) {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = next.(*chatModel)
 
-	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("line one")},
-		{Type: tea.KeyCtrlJ},
-		{Type: tea.KeyRunes, Runes: []rune("line two")},
+	keys := []tea.KeyPressMsg{
+		{Code: 'l', Text: "line one"},
+		{Code: 'j', Mod: tea.ModCtrl},
+		{Code: 'l', Text: "line two"},
 	}
 	for _, k := range keys {
 		next, _ := m.Update(k)
@@ -93,7 +93,7 @@ func TestChatModelMultilineInput(t *testing.T) {
 		t.Fatalf("input after ctrl+j = %q, want %q", got, "line one\nline two")
 	}
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(*chatModel)
 	if m.state != chatBusy {
 		t.Fatalf("state after enter = %v, want chatBusy", m.state)
