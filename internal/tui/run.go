@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 
 	"go-reins/internal/agent"
 )
@@ -122,7 +122,7 @@ func (m *runModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			m.cancel()
@@ -154,7 +154,7 @@ func (m *runModel) decide(allow bool) (tea.Model, tea.Cmd) {
 	return m, m.gate.Wait()
 }
 
-func (m *runModel) View() string {
+func (m *runModel) View() tea.View {
 	var sb strings.Builder
 	sb.WriteString(dimStyle.Render("task: "))
 	sb.WriteString(m.task)
@@ -179,7 +179,7 @@ func (m *runModel) View() string {
 		sb.WriteString(dimStyle.Render("aborted"))
 		sb.WriteString("\n")
 	}
-	return sb.String()
+	return tea.NewView(sb.String())
 }
 
 // renderApproval is shared by the run and chat views.

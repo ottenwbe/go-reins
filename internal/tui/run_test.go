@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
@@ -51,12 +51,12 @@ func TestRunModelApprovalFlow(t *testing.T) {
 	if m.state != runApproving {
 		t.Fatalf("state after request = %v, want runApproving", m.state)
 	}
-	if view := m.View(); !strings.Contains(view, "allow?") || !strings.Contains(view, `{"command":"ls"}`) {
-		t.Errorf("approval view = %q", view)
+	if view := m.View(); !strings.Contains(view.Content, "allow?") || !strings.Contains(view.Content, `{"command":"ls"}`) {
+		t.Errorf("approval view = %q", view.Content)
 	}
 
 	// Allowing it delivers true to the agent and returns to thinking.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	m = next.(*runModel)
 	if m.state != runThinking {
 		t.Errorf("state after allow = %v, want runThinking", m.state)
@@ -73,7 +73,7 @@ func TestRunModelApprovalFlow(t *testing.T) {
 	// Denying works the same way.
 	denyReply := make(chan bool, 1)
 	m.Update(ApprovalRequest{Tool: "shell", Args: "{}", Reply: denyReply})
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	m = next.(*runModel)
 	if m.state != runThinking {
 		t.Errorf("state after deny = %v, want runThinking", m.state)
@@ -96,14 +96,14 @@ func TestRunModelDoneAndError(t *testing.T) {
 	done := newRunModel(a, gate, "task")
 	next, _ := done.Update(stepDoneMsg{res: agent.RunResult{Answer: "here it is", Turns: 2}})
 	done = next.(*runModel)
-	if done.state != runDone || !strings.Contains(done.View(), "here it is") {
-		t.Errorf("done state = %v, view = %q", done.state, done.View())
+	if done.state != runDone || !strings.Contains(done.View().Content, "here it is") {
+		t.Errorf("done state = %v, view = %q", done.state, done.View().Content)
 	}
 
 	failing := newRunModel(a, gate, "task")
 	next, _ = failing.Update(stepDoneMsg{err: errors.New("backend down")})
 	failing = next.(*runModel)
-	if failing.state != runError || !strings.Contains(failing.View(), "backend down") {
-		t.Errorf("error state = %v, view = %q", failing.state, failing.View())
+	if failing.state != runError || !strings.Contains(failing.View().Content, "backend down") {
+		t.Errorf("error state = %v, view = %q", failing.state, failing.View().Content)
 	}
 }

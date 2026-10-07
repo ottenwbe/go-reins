@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
@@ -69,18 +69,21 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, header string) *chatModel 
 	// color while focused and goes dim when blurred, the cursor
 	// line drops its full-line background (the block cursor is
 	// enough), the placeholder stays muted, and the line-number
-	// gutter keeps a low profile in both states.
-	ta.FocusedStyle.Prompt = userStyle
-	ta.FocusedStyle.Placeholder = dimStyle
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.CursorLineNumber = dimStyle
-	ta.FocusedStyle.LineNumber = dimStyle
-	ta.BlurredStyle.Prompt = dimStyle
-	ta.BlurredStyle.Placeholder = dimStyle
-	ta.BlurredStyle.Text = dimStyle
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.CursorLineNumber = dimStyle
-	ta.BlurredStyle.LineNumber = dimStyle
+	// gutter keeps a low profile in both states. v2 hands styles
+	// out by value, so they are edited and set back.
+	styles := ta.Styles()
+	styles.Focused.Prompt = userStyle
+	styles.Focused.Placeholder = dimStyle
+	styles.Focused.CursorLine = lipgloss.NewStyle()
+	styles.Focused.CursorLineNumber = dimStyle
+	styles.Focused.LineNumber = dimStyle
+	styles.Blurred.Prompt = dimStyle
+	styles.Blurred.Placeholder = dimStyle
+	styles.Blurred.Text = dimStyle
+	styles.Blurred.CursorLine = lipgloss.NewStyle()
+	styles.Blurred.CursorLineNumber = dimStyle
+	styles.Blurred.LineNumber = dimStyle
+	ta.SetStyles(styles)
 
 	return &chatModel{
 		ctx:      ctx,
@@ -88,17 +91,18 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, header string) *chatModel 
 		agent:    a,
 		gate:     gate,
 		header:   header,
-		viewport: viewport.New(0, 0),
+		viewport: viewport.New(),
 		textarea: ta,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(spinnerStyle)),
 		state:    chatReady,
 	}
 }
 
-// Chat runs the interactive REPL until the operator quits. It uses
-// the alt screen; the transcript lives only as long as the session.
+// Chat runs the interactive REPL until the operator quits. The alt
+// screen is requested by the View itself (v2 models declare terminal
+// state there); the transcript lives only as long as the session.
 func Chat(a *agent.Agent, gate *ApprovalGate, header string) error {
-	_, err := tea.NewProgram(newChatModel(a, gate, header), tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(newChatModel(a, gate, header)).Run()
 	return err
 }
 
@@ -110,7 +114,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.viewport.Width = msg.Width
+		m.viewport.SetWidth(msg.Width)
 		m.textarea.SetWidth(msg.Width)
 		m.layout()
 		return m, nil
@@ -138,7 +142,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			m.cancel()
@@ -218,13 +222,14 @@ func (m *chatModel) appendLine(line string) {
 // current input area height.
 func (m *chatModel) layout() {
 	input := lipgloss.Height(m.textarea.View())
-	m.viewport.Height = m.height - lipgloss.Height(m.header) - input - 4
-	if m.viewport.Height < 1 {
-		m.viewport.Height = 1
+	h := m.height - lipgloss.Height(m.header) - input - 4
+	if h < 1 {
+		h = 1
 	}
+	m.viewport.SetHeight(h)
 }
 
-func (m *chatModel) View() string {
+func (m *chatModel) View() tea.View {
 	var sb strings.Builder
 	sb.WriteString(m.header)
 	sb.WriteString("\n")
@@ -245,5 +250,8 @@ func (m *chatModel) View() string {
 	}
 	sb.WriteString("\n\n")
 	sb.WriteString(m.textarea.View())
-	return sb.String()
+
+	v := tea.NewView(sb.String())
+	v.AltScreen = true
+	return v
 }

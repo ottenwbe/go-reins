@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // Shared colors for the run and chat views. Lipgloss degrades
 // gracefully on terminals without color.
