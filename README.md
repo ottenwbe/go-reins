@@ -19,8 +19,9 @@ This project implements both, with a strict seam between them.
 go-reins/
 ├── main.go                        # entry point, just calls cmd.Execute()
 ├── cmd/
-│   ├── root.go                    # cobra root + viper (config file, env, flags)
-│   └── run.go                     # `go-reins run "task"` + backend factory
+│   ├── root.go                    # cobra root + flag registration
+│   ├── run.go                     # `go-reins run "task"`: TUI or headless
+│   └── chat.go                    # `go-reins chat`: interactive REPL
 └── internal/
     ├── backend/
     │   ├── backend.go             # the Backend interface — the swappable seam
@@ -28,6 +29,13 @@ go-reins/
     │   └── llamacpp/llamacpp.go   # adapter: OpenAI-style /v1/chat/completions
     ├── tools/
     │   └── shell/shell.go         # tool: run a shell command, return its output
+    ├── config/
+    │   └── config.go              # flags > env (GO_REINS_*) > YAML file > defaults
+    ├── tui/
+    │   ├── approval.go            # ApprovalGate: sync Approver <-> bubbletea bridge
+    │   ├── run.go                 # run view: spinner, approval dialog, answer
+    │   ├── chat.go                # chat REPL: transcript, input, approvals
+    │   └── styles.go              # shared lipgloss styles
     ├── logging/
     │   └── logging.go             # zap logger setup, level from --log-level
     └── agent/
@@ -51,15 +59,26 @@ Key design decisions:
   (`RunResult`); `go-reins run` prints the turn count and offers
   `--history` to dump the transcript.
 - **Human in the loop**: an `Approver` gate shows every tool call
-  before execution. `go-reins run` prompts for confirmation on each
-  call unless `--yes` is set. A denied call is fed back to the model
-  as an observation.
+  before execution. In a terminal, the bubbletea views (`internal/tui`)
+  present each call as an approval dialog (`y`/`n`) unless `--yes` is
+  set; without a TTY, `go-reins run` falls back to a plain `y/N` prompt
+  on stdin. A denied call is fed back to the model as an observation.
+- **Interaction** runs on bubbletea (`internal/tui`). The trick the
+  seams allow: `Approver` is a synchronous callback invoked from inside
+  the agent loop, while bubbletea owns the terminal. The `ApprovalGate`
+  bridges them with channels — the approver blocks on a request
+  channel, the TUI delivers the operator's decision on a reply channel.
+  The agent package never learns that a TUI exists.
 - **`internal/tools/shell`** runs a command via `sh -c` with a 30s
   timeout and caps its output, so the agent can inspect the machine
   it runs on ("figure out which system you run on"). A non-zero exit
   status is an observation, not a failure.
-- **Configuration** follows viper's precedence chain: CLI flags >
-  environment (`GO_REINS_*`) > config file > defaults.
+- **Configuration** lives in `internal/config` with an explicit
+  precedence chain: CLI flags > environment (`GO_REINS_*`) > config
+  file (YAML) > defaults. A flag only wins when it was explicitly
+  set, so a config file or env var can supply what the user left at
+  its default. (This used to be viper's job; the hand-rolled version
+  is ~200 lines and keeps the dependency tree small.)
 - **Logging** uses zap (`internal/logging`): one logger per run,
   console format on stderr, level via `--log-level`. The agent logs
   turns at debug, tool calls at info, and denials/failures at warn;
@@ -75,8 +94,10 @@ implementations — `cmd` wires them together:
 | --- | --- | --- |
 | Inference | `backend.Backend` | `ollama`, `llamacpp` |
 | Capability | `agent.Tool` | `tools/shell` |
-| Permission | `agent.Approver` | interactive prompt in `cmd` (nil = allow) |
+| Permission | `agent.Approver` | `tui.ApprovalGate` (bubbletea), stdin prompt (headless), nil = allow |
 | Observability | `*zap.Logger` | `internal/logging` (no-op default) |
+| Presentation | — (owns the terminal) | `tui` run view, `tui` chat REPL |
+| Configuration | `config.Config` | `internal/config` (flags/env/file/defaults) |
 
 ### The agent loop
 
@@ -126,17 +147,22 @@ Deliberate loop properties:
   parallel execution are left open deliberately.
 - **`Run` is stateless.** History lives for the duration of the call
   and is returned in `RunResult` for review; calling `Run` twice never
-  shares state.
+  shares state. `Step` is the session variant: it takes an existing
+  history and returns the extended one, so the chat REPL can carry
+  the conversation across prompts while each step still gets its own
+  turn budget.
 
 ### Package dependencies
 
 ```
 main
- └── cmd          wiring: cobra/viper, backend factory, tool registry,
-      │           approver and logger installation
+ └── cmd          wiring: cobra flags, config resolution, agent
+      │           assembly, TUI vs headless dispatch
       ├── agent         the loop; imports backend (types only) and zap
       ├── backend/ollama, backend/llamacpp   adapters, picked by cmd
       ├── tools/shell   implements agent.Tool, registered by cmd
+      ├── config        resolves flags/env/file/defaults before commands run
+      ├── tui           bubbletea views; imports agent and the gate
       └── logging       builds the *zap.Logger cmd passes to agent
 ```
 
@@ -179,6 +205,17 @@ Use the llama.cpp backend:
 ./go-reins run --backend llamacpp --model qwen2.5 "hello"
 ```
 
+Start an interactive chat session (transcript, input area, approval
+dialogs; conversation persists for the session, quit with ctrl+c):
+
+```sh
+./go-reins chat --model llama3.2
+```
+
+In a terminal both commands run their bubbletea views. Piped into
+something else, `run` falls back to plain output and a `y/N` prompt on
+stdin, so it stays scriptable; `chat` requires a terminal.
+
 ### Flags and configuration
 
 | Flag | Env | Default | Description |
@@ -191,6 +228,10 @@ Use the llama.cpp backend:
 | `--turns` | `GO_REINS_TURNS` | `false` | print how many turns the run took |
 | `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
 | `--config` | — | `$HOME/.go-reins.yaml` | config file path |
+
+Configuration resolves as CLI flags > environment (`GO_REINS_*`) >
+config file > defaults; a flag counts only when explicitly set.
+`internal/config` implements the whole chain — no viper.
 
 Config file example (`~/.go-reins.yaml`):
 
@@ -218,7 +259,9 @@ using the Go version pinned in `go.mod`.
       to `Tool.Execute`, observations appended to the history
 - [x] Shell tool + human in the loop: tool calls shown for
       confirmation unless `--yes` is set
+- [x] Bubbletea front end: run view with approval dialog, interactive
+      chat REPL (`go-reins chat`), headless fallback for non-TTY use
+- [x] Hand-rolled config loader replacing viper (cobra stays)
 - [ ] `--max-turns` flag
 - [ ] Streaming responses
-- [ ] Interactive REPL mode
 - [ ] More backends (OpenAI-compatible cloud APIs)

@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
+	"golang.org/x/term"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
@@ -17,6 +17,7 @@ import (
 	"go-reins/internal/backend/ollama"
 	"go-reins/internal/logging"
 	"go-reins/internal/tools/shell"
+	"go-reins/internal/tui"
 )
 
 const defaultSystemPrompt = `You are a helpful assistant running inside a small agent harness.
@@ -39,42 +40,58 @@ func init() {
 }
 
 func runTask(cmd *cobra.Command, args []string) error {
-	logger, err := logging.New(viper.GetString("log-level"))
-	if err != nil {
-		return err
+	if interactive() {
+		return runInteractive(args[0])
 	}
-	defer func() { _ = logger.Sync() }()
+	return runHeadless(args[0])
+}
 
-	b, err := newBackend()
-	if err != nil {
-		return err
-	}
+// interactive reports whether stdin and stdout are both terminals;
+// the bubbletea views need them, anything else gets the plain flow.
+func interactive() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
 
-	model := viper.GetString("model")
-	if model == "" {
-		return fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
-	}
-
-	logger.Info("starting run",
-		zap.String("backend", b.Name()),
-		zap.String("model", model))
-
-	tools := []agent.Tool{shell.New()}
-	a := agent.New(b, model, defaultSystemPrompt, tools,
-		agent.WithApprover(confirmApprover()),
-		agent.WithLogger(logger),
-	)
-
-	res, err := a.Run(context.Background(), args[0])
+// runInteractive drives the task through the bubbletea run view: a
+// spinner while the model works, an approval dialog on each tool
+// call, and the answer as the final frame.
+func runInteractive(task string) error {
+	gate := tui.NewApprovalGate()
+	a, err := buildAgent(approverFor(gate))
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(res.Answer)
-	if viper.GetBool("turns") {
+	res, err := tui.RunTask(a, gate, task)
+	if err != nil {
+		return err
+	}
+	if conf.Turns {
 		fmt.Fprintf(os.Stderr, "\nrun finished in %d turn(s)\n", res.Turns)
 	}
-	if viper.GetBool("history") {
+	if conf.History {
+		printHistory(res.History)
+	}
+	return nil
+}
+
+// runHeadless is the non-TTY path: plain output on stdout and the
+// classic y/N prompt on stdin, so `go-reins run` stays scriptable.
+func runHeadless(task string) error {
+	a, err := buildAgent(stdinApprover())
+	if err != nil {
+		return err
+	}
+
+	res, err := a.Run(context.Background(), task)
+	if err != nil {
+		return err
+	}
+	fmt.Println(res.Answer)
+	if conf.Turns {
+		fmt.Fprintf(os.Stderr, "\nrun finished in %d turn(s)\n", res.Turns)
+	}
+	if conf.History {
 		printHistory(res.History)
 	}
 	return nil
@@ -89,11 +106,11 @@ func printHistory(history []backend.Message) {
 	}
 }
 
-// confirmApprover is the human in the loop: every tool call is shown
-// on stderr and must be confirmed. It returns nil (allow everything)
-// when --yes is set.
-func confirmApprover() agent.Approver {
-	if viper.GetBool("yes") {
+// stdinApprover is the human in the loop without a TUI: every tool
+// call is shown on stderr and must be confirmed on stdin. It returns
+// nil (allow everything) when --yes is set.
+func stdinApprover() agent.Approver {
+	if conf.Yes {
 		return nil
 	}
 	return func(name, args string) bool {
@@ -115,18 +132,56 @@ func confirmApprover() agent.Approver {
 	}
 }
 
-// newBackend builds the backend selected by config, flag, or env.
+// approverFor returns the gate-backed approver for the TUI views, or
+// nil (allow everything) when --yes is set.
+func approverFor(gate *tui.ApprovalGate) agent.Approver {
+	if conf.Yes {
+		return nil
+	}
+	return gate.Approver()
+}
+
+// buildAgent assembles the agent: backend and model from the
+// resolved config, the shell tool, the logger, and the approver.
+func buildAgent(approve agent.Approver) (*agent.Agent, error) {
+	logger, err := logging.New(conf.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := newBackend()
+	if err != nil {
+		return nil, err
+	}
+
+	if conf.Model == "" {
+		return nil, fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
+	}
+
+	opts := []agent.Option{agent.WithLogger(logger)}
+	if approve != nil {
+		opts = append(opts, agent.WithApprover(approve))
+	}
+
+	logger.Info("starting session",
+		zap.String("backend", b.Name()),
+		zap.String("model", conf.Model))
+
+	return agent.New(b, conf.Model, defaultSystemPrompt, []agent.Tool{shell.New()}, opts...), nil
+}
+
+// newBackend builds the backend selected by config.
 func newBackend() (backend.Backend, error) {
 	cfg := backend.Config{
-		BaseURL: viper.GetString("url"),
-		Model:   viper.GetString("model"),
+		BaseURL: conf.URL,
+		Model:   conf.Model,
 	}
-	switch viper.GetString("backend") {
+	switch conf.Backend {
 	case "ollama":
 		return ollama.New(cfg), nil
 	case "llamacpp":
 		return llamacpp.New(cfg), nil
 	default:
-		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", viper.GetString("backend"))
+		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", conf.Backend)
 	}
 }
