@@ -23,7 +23,7 @@ func init() {
 }
 
 func chatSession(cmd *cobra.Command, args []string) error {
-	if !interactive() {
+	if !tui.Interactive() {
 		return fmt.Errorf("chat requires an interactive terminal")
 	}
 

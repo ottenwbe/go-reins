@@ -31,10 +31,13 @@ local inference backends (Ollama, llama.cpp) through a swappable interface.`,
 // conf holds the resolved configuration for the running command.
 var conf config.Config
 
-// Execute runs the root command.
+// Execute runs the root command. A failure here is the program's
+// final user-facing output, so it is printed plainly rather than
+// logged: the logger is built per command from the resolved config,
+// which does not exist when config loading itself failed.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "go-reins:", err)
 		os.Exit(1)
 	}
 }
@@ -46,7 +49,5 @@ func init() {
 	flags.String("url", "", "backend base URL (defaults: ollama http://localhost:11434, llamacpp http://localhost:8080)")
 	flags.String("model", "", "model name, e.g. llama3.2 or qwen2.5")
 	flags.Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
-	flags.Bool("history", false, "print the full conversation history (with roles) after the answer")
-	flags.Bool("turns", false, "print how many turns the run took")
 	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
 }

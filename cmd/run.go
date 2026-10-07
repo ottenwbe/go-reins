@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"golang.org/x/term"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
@@ -36,20 +35,18 @@ way. Example:
 }
 
 func init() {
+	// --history and --turns report on the one task this command
+	// performs; chat has its own live transcript instead.
+	runCmd.Flags().Bool("history", false, "print the full conversation history (with roles) after the answer")
+	runCmd.Flags().Bool("turns", false, "print how many turns the run took")
 	rootCmd.AddCommand(runCmd)
 }
 
 func runTask(cmd *cobra.Command, args []string) error {
-	if interactive() {
+	if tui.Interactive() {
 		return runInteractive(args[0])
 	}
 	return runHeadless(args[0])
-}
-
-// interactive reports whether stdin and stdout are both terminals;
-// the bubbletea views need them, anything else gets the plain flow.
-func interactive() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // runInteractive drives the task through the bubbletea run view: a
