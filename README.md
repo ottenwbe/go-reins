@@ -209,6 +209,17 @@ In a terminal both commands run their bubbletea views. Piped into
 something else, `run` falls back to plain output and a `y/N` prompt on
 stdin, so it stays scriptable; `chat` requires a terminal.
 
+List the open source licenses of everything the binary links
+against:
+
+```sh
+./go-reins licenses
+```
+
+Modules and versions come from the build info embedded in the
+binary; license texts are read from the local Go module cache and
+classified against common SPDX signatures (`internal/licenses`).
+
 ### Flags and configuration
 
 | Flag | Env | Default | Description |
