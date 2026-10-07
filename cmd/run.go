@@ -8,19 +8,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
-	"go-reins/internal/backend/llamacpp"
-	"go-reins/internal/backend/ollama"
-	"go-reins/internal/logging"
-	"go-reins/internal/tools/shell"
+	"go-reins/internal/session"
 	"go-reins/internal/tui"
 )
-
-const defaultSystemPrompt = `You are a helpful assistant running inside a small agent harness.
-Answer concisely and accurately.`
 
 var runCmd = &cobra.Command{
 	Use:   "run [task]",
@@ -54,7 +47,7 @@ func runTask(cmd *cobra.Command, args []string) error {
 // call, and the answer as the final frame.
 func runInteractive(task string) error {
 	gate := tui.NewApprovalGate()
-	a, err := buildAgent(approverFor(gate))
+	a, err := session.NewAgent(conf, session.GateApprover(gate, conf))
 	if err != nil {
 		return err
 	}
@@ -75,7 +68,7 @@ func runInteractive(task string) error {
 // runHeadless is the non-TTY path: plain output on stdout and the
 // classic y/N prompt on stdin, so `go-reins run` stays scriptable.
 func runHeadless(task string) error {
-	a, err := buildAgent(stdinApprover())
+	a, err := session.NewAgent(conf, stdinApprover())
 	if err != nil {
 		return err
 	}
@@ -126,59 +119,5 @@ func stdinApprover() agent.Approver {
 			fmt.Fprintln(os.Stderr, "denied")
 			return false
 		}
-	}
-}
-
-// approverFor returns the gate-backed approver for the TUI views, or
-// nil (allow everything) when --yes is set.
-func approverFor(gate *tui.ApprovalGate) agent.Approver {
-	if conf.Yes {
-		return nil
-	}
-	return gate.Approver()
-}
-
-// buildAgent assembles the agent: backend and model from the
-// resolved config, the shell tool, the logger, and the approver.
-func buildAgent(approve agent.Approver) (*agent.Agent, error) {
-	logger, err := logging.New(conf.LogLevel)
-	if err != nil {
-		return nil, err
-	}
-
-	b, err := newBackend()
-	if err != nil {
-		return nil, err
-	}
-
-	if conf.Model == "" {
-		return nil, fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
-	}
-
-	opts := []agent.Option{agent.WithLogger(logger)}
-	if approve != nil {
-		opts = append(opts, agent.WithApprover(approve))
-	}
-
-	logger.Info("starting session",
-		zap.String("backend", b.Name()),
-		zap.String("model", conf.Model))
-
-	return agent.New(b, conf.Model, defaultSystemPrompt, []agent.Tool{shell.New()}, opts...), nil
-}
-
-// newBackend builds the backend selected by config.
-func newBackend() (backend.Backend, error) {
-	cfg := backend.Config{
-		BaseURL: conf.URL,
-		Model:   conf.Model,
-	}
-	switch conf.Backend {
-	case "ollama":
-		return ollama.New(cfg), nil
-	case "llamacpp":
-		return llamacpp.New(cfg), nil
-	default:
-		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", conf.Backend)
 	}
 }

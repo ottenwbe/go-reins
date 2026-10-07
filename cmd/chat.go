@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"go-reins/internal/session"
 	"go-reins/internal/tui"
 )
 
@@ -28,7 +29,7 @@ func chatSession(cmd *cobra.Command, args []string) error {
 	}
 
 	gate := tui.NewApprovalGate()
-	a, err := buildAgent(approverFor(gate))
+	a, err := session.NewAgent(conf, session.GateApprover(gate, conf))
 	if err != nil {
 		return err
 	}
