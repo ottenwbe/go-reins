@@ -31,6 +31,8 @@ go-reins/
     │   └── shell/shell.go         # tool: run a shell command, return its output
     ├── config/
     │   └── config.go              # flags > env (GO_REINS_*) > YAML file > defaults
+    ├── session/
+    │   └── session.go             # agent assembly: backend + tool + logger from config
     ├── tui/
     │   ├── approval.go            # ApprovalGate: sync Approver <-> bubbletea bridge
     │   ├── run.go                 # run view: spinner, approval dialog, answer
@@ -88,7 +90,7 @@ Key design decisions:
 
 Every extension point is a small interface with one implementation
 per variant. The agent package depends on none of the concrete
-implementations — `cmd` wires them together:
+implementations — `session` wires them together:
 
 | Seam | Interface | Implementations |
 | --- | --- | --- |
@@ -104,28 +106,19 @@ implementations — `cmd` wires them together:
 One `Run` is a bounded loop of backend round trips ("turns"). The
 model's reply decides how each turn ends:
 
-```
-system prompt (base + tool docs)   user prompt
-        │                               │
-        └───────────┬───────────────────┘
-                    ▼
-          ┌──────────────────────┐
-          │  send history to     │◄───────────┐
-          │  backend             │             │
-          └──────────┬───────────┘             │
-                     ▼                         │
-        reply contains TOOLCALL line?          │
-          ├─ no  → final answer, done          │
-          └─ yes                                  │
-                ▼                               │
-        approver gate                           │
-          ├─ denied → observation               │
-          └─ allowed → execute tool             │
-                       ▼                        │
-        append TOOLRESULT as user message ─────┤
-                                                │
-        next turn (capped at maxTurns,         │
-        default 8; exceeding it fails the run) ┘
+```mermaid
+flowchart TD
+    sys["system prompt (base + tool docs)"] --> send["send history to backend"]
+    usr["user prompt"] --> send
+    send --> toolcall{"reply contains TOOLCALL line?"}
+    toolcall -->|no| done["final answer, done"]
+    toolcall -->|yes| gate{"approver gate"}
+    gate -->|denied| obs["denial becomes an observation"]
+    gate -->|allowed| exec["execute tool"]
+    exec --> append["append TOOLRESULT as user message"]
+    obs --> next["next turn — capped at maxTurns (default 8);<br>exceeding it fails the run"]
+    append --> next
+    next --> send
 ```
 
 Deliberate loop properties:
@@ -154,21 +147,21 @@ Deliberate loop properties:
 
 ### Package dependencies
 
-```
-main
- └── cmd          wiring: cobra flags, config resolution, agent
-      │           assembly, TUI vs headless dispatch
-      ├── agent         the loop; imports backend (types only) and zap
-      ├── backend/ollama, backend/llamacpp   adapters, picked by cmd
-      ├── tools/shell   implements agent.Tool, registered by cmd
-      ├── config        resolves flags/env/file/defaults before commands run
-      ├── tui           bubbletea views; imports agent and the gate
-      └── logging       builds the *zap.Logger cmd passes to agent
+```mermaid
+flowchart TD
+    main["main"] --> cmd["cmd — cobra flags, config resolution, TUI vs headless dispatch"]
+    cmd --> session["session — agent assembly: backend, tool, and logger built from the resolved config"]
+    cmd --> agent["agent — the loop; imports backend (types only) and zap"]
+    cmd --> backends["backend/ollama, backend/llamacpp — adapters, picked by session"]
+    cmd --> shell["tools/shell — implements agent.Tool, registered by session"]
+    cmd --> config["config — resolves flags/env/file/defaults before commands run"]
+    cmd --> tui["tui — bubbletea views; imports agent and the gate"]
+    cmd --> logging["logging — builds the *zap.Logger session passes to agent"]
 ```
 
 Dependencies point inward: `agent` knows only the `backend.Backend`
 interface and its message types — never which adapter is behind it,
-and never a concrete tool. `cmd` is the only place that assembles
+and never a concrete tool. `session` is the only place that assembles
 concrete implementations, which is what keeps the seams swappable.
 
 ## Requirements
