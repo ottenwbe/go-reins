@@ -40,7 +40,7 @@ type fakeTool struct {
 }
 
 func (f *fakeTool) Name() string        { return f.name }
-func (f *fakeTool) Description() string  { return f.desc }
+func (f *fakeTool) Description() string { return f.desc }
 func (f *fakeTool) Execute(_ context.Context, args string) (string, error) {
 	f.calls = append(f.calls, args)
 	if f.err != nil {
@@ -315,7 +315,8 @@ func TestRunLogsDeniedCall(t *testing.T) {
 	}
 }
 
-func TestMaxTurnsConfiguration(t *testing.T) {	fb := &fakeBackend{reply: backend.ChatResponse{Content: "hello there"}}
+func TestMaxTurnsConfiguration(t *testing.T) {
+	fb := &fakeBackend{reply: backend.ChatResponse{Content: "hello there"}}
 
 	if got := New(fb, "test-model", "be brief", nil).maxTurns; got != defaultMaxTurns {
 		t.Errorf("default maxTurns = %d, want %d", got, defaultMaxTurns)
@@ -329,5 +330,39 @@ func TestMaxTurnsConfiguration(t *testing.T) {	fb := &fakeBackend{reply: backend
 	ignored := New(fb, "test-model", "be brief", nil, WithMaxTurns(0))
 	if ignored.maxTurns != defaultMaxTurns {
 		t.Errorf("maxTurns = %d after invalid option, want %d", ignored.maxTurns, defaultMaxTurns)
+	}
+}
+
+func TestStepContinuesSession(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: "first answer"},
+		{Content: "second answer"},
+	}}
+	a := New(fb, "test-model", "be brief", nil)
+
+	res1, err := a.Step(context.Background(), nil, "first prompt")
+	if err != nil {
+		t.Fatalf("step 1: %v", err)
+	}
+	res2, err := a.Step(context.Background(), res1.History, "second prompt")
+	if err != nil {
+		t.Fatalf("step 2: %v", err)
+	}
+	if res2.Answer != "second answer" {
+		t.Errorf("step 2 answer = %q, want %q", res2.Answer, "second answer")
+	}
+
+	if len(fb.calls) != 2 {
+		t.Fatalf("backend calls = %d, want 2", len(fb.calls))
+	}
+	msgs := fb.calls[1].Messages
+	if len(msgs) != 4 {
+		t.Fatalf("step 2 messages = %d, want 4 (system + user + assistant + user)", len(msgs))
+	}
+	if msgs[0].Role != backend.RoleSystem {
+		t.Errorf("step 2 must reuse the system prompt, got role %q first", msgs[0].Role)
+	}
+	if msgs[1].Content != "first prompt" || msgs[2].Content != "first answer" || msgs[3].Content != "second prompt" {
+		t.Errorf("step 2 conversation = %v", msgs)
 	}
 }

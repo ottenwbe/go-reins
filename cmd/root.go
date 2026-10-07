@@ -5,67 +5,49 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-)
 
-var cfgFile string
+	"go-reins/internal/config"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "go-reins",
 	Short: "A minimal AI agent harness with pluggable local backends",
 	Long: `go-reins is a learning project: a small agent harness that talks to
 local inference backends (Ollama, llama.cpp) through a swappable interface.`,
+	// Runtime errors are printed by Execute; the usage dump is noise.
+	SilenceUsage: true,
+	// Resolving configuration here means every subcommand sees the
+	// same precedence chain: flags > env > config file > defaults.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load(cmd.Flags())
+		if err != nil {
+			return err
+		}
+		conf = cfg
+		return nil
+	},
 }
 
-// Execute runs the root command.
+// conf holds the resolved configuration for the running command.
+var conf config.Config
+
+// Execute runs the root command. A failure here is the program's
+// final user-facing output, so it is printed plainly rather than
+// logged: the logger is built per command from the resolved config,
+// which does not exist when config loading itself failed.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "go-reins:", err)
 		os.Exit(1)
 	}
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.go-reins.yaml)")
-	rootCmd.PersistentFlags().String("backend", "ollama", "inference backend: ollama or llamacpp")
-	rootCmd.PersistentFlags().String("url", "", "backend base URL (defaults: ollama http://localhost:11434, llamacpp http://localhost:8080)")
-	rootCmd.PersistentFlags().String("model", "", "model name, e.g. llama3.2 or qwen2.5")
-	rootCmd.PersistentFlags().Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
-	rootCmd.PersistentFlags().Bool("history", false, "print the full conversation history (with roles) after the answer")
-	rootCmd.PersistentFlags().Bool("turns", false, "print how many turns the run took")
-	rootCmd.PersistentFlags().String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
-
-	_ = viper.BindPFlag("backend", rootCmd.PersistentFlags().Lookup("backend"))
-	_ = viper.BindPFlag("url", rootCmd.PersistentFlags().Lookup("url"))
-	_ = viper.BindPFlag("model", rootCmd.PersistentFlags().Lookup("model"))
-	_ = viper.BindPFlag("yes", rootCmd.PersistentFlags().Lookup("yes"))
-	_ = viper.BindPFlag("history", rootCmd.PersistentFlags().Lookup("history"))
-	_ = viper.BindPFlag("turns", rootCmd.PersistentFlags().Lookup("turns"))
-	_ = viper.BindPFlag("log-level", rootCmd.PersistentFlags().Lookup("log-level"))
-}
-
-func initConfig() {
-	if cfgFile != "" {
-		viper.SetConfigFile(cfgFile)
-	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cannot resolve home directory:", err)
-			os.Exit(1)
-		}
-		viper.AddConfigPath(home)
-		viper.AddConfigPath(".")
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".go-reins")
-	}
-
-	// Environment overrides: GO_REINS_BACKEND, GO_REINS_URL, GO_REINS_MODEL.
-	viper.SetEnvPrefix("GO_REINS")
-	viper.AutomaticEnv()
-
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "using config file:", viper.ConfigFileUsed())
-	}
+	flags := rootCmd.PersistentFlags()
+	flags.String("config", "", "config file (default is $HOME/.go-reins.yaml)")
+	flags.String("backend", "ollama", "inference backend: ollama or llamacpp")
+	flags.String("url", "", "backend base URL (defaults: ollama http://localhost:11434, llamacpp http://localhost:8080)")
+	flags.String("model", "", "model name, e.g. llama3.2 or qwen2.5")
+	flags.Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
+	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
 }

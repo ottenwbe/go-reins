@@ -8,19 +8,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
-	"go-reins/internal/backend/llamacpp"
-	"go-reins/internal/backend/ollama"
-	"go-reins/internal/logging"
-	"go-reins/internal/tools/shell"
+	"go-reins/internal/session"
+	"go-reins/internal/tui"
 )
-
-const defaultSystemPrompt = `You are a helpful assistant running inside a small agent harness.
-Answer concisely and accurately.`
 
 var runCmd = &cobra.Command{
 	Use:   "run [task]",
@@ -35,46 +28,60 @@ way. Example:
 }
 
 func init() {
+	// --history and --turns report on the one task this command
+	// performs; chat has its own live transcript instead.
+	runCmd.Flags().Bool("history", false, "print the full conversation history (with roles) after the answer")
+	runCmd.Flags().Bool("turns", false, "print how many turns the run took")
 	rootCmd.AddCommand(runCmd)
 }
 
 func runTask(cmd *cobra.Command, args []string) error {
-	logger, err := logging.New(viper.GetString("log-level"))
-	if err != nil {
-		return err
+	if tui.Interactive() {
+		return runInteractive(args[0])
 	}
-	defer func() { _ = logger.Sync() }()
+	return runHeadless(args[0])
+}
 
-	b, err := newBackend()
-	if err != nil {
-		return err
-	}
-
-	model := viper.GetString("model")
-	if model == "" {
-		return fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
-	}
-
-	logger.Info("starting run",
-		zap.String("backend", b.Name()),
-		zap.String("model", model))
-
-	tools := []agent.Tool{shell.New()}
-	a := agent.New(b, model, defaultSystemPrompt, tools,
-		agent.WithApprover(confirmApprover()),
-		agent.WithLogger(logger),
-	)
-
-	res, err := a.Run(context.Background(), args[0])
+// runInteractive drives the task through the bubbletea run view: a
+// spinner while the model works, an approval dialog on each tool
+// call, and the answer as the final frame.
+func runInteractive(task string) error {
+	gate := tui.NewApprovalGate()
+	a, err := session.NewAgent(conf, session.GateApprover(gate, conf))
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(res.Answer)
-	if viper.GetBool("turns") {
+	res, err := tui.RunTask(a, gate, task)
+	if err != nil {
+		return err
+	}
+	if conf.Turns {
 		fmt.Fprintf(os.Stderr, "\nrun finished in %d turn(s)\n", res.Turns)
 	}
-	if viper.GetBool("history") {
+	if conf.History {
+		printHistory(res.History)
+	}
+	return nil
+}
+
+// runHeadless is the non-TTY path: plain output on stdout and the
+// classic y/N prompt on stdin, so `go-reins run` stays scriptable.
+func runHeadless(task string) error {
+	a, err := session.NewAgent(conf, stdinApprover())
+	if err != nil {
+		return err
+	}
+
+	res, err := a.Run(context.Background(), task)
+	if err != nil {
+		return err
+	}
+	fmt.Println(res.Answer)
+	if conf.Turns {
+		fmt.Fprintf(os.Stderr, "\nrun finished in %d turn(s)\n", res.Turns)
+	}
+	if conf.History {
 		printHistory(res.History)
 	}
 	return nil
@@ -89,11 +96,11 @@ func printHistory(history []backend.Message) {
 	}
 }
 
-// confirmApprover is the human in the loop: every tool call is shown
-// on stderr and must be confirmed. It returns nil (allow everything)
-// when --yes is set.
-func confirmApprover() agent.Approver {
-	if viper.GetBool("yes") {
+// stdinApprover is the human in the loop without a TUI: every tool
+// call is shown on stderr and must be confirmed on stdin. It returns
+// nil (allow everything) when --yes is set.
+func stdinApprover() agent.Approver {
+	if conf.Yes {
 		return nil
 	}
 	return func(name, args string) bool {
@@ -112,21 +119,5 @@ func confirmApprover() agent.Approver {
 			fmt.Fprintln(os.Stderr, "denied")
 			return false
 		}
-	}
-}
-
-// newBackend builds the backend selected by config, flag, or env.
-func newBackend() (backend.Backend, error) {
-	cfg := backend.Config{
-		BaseURL: viper.GetString("url"),
-		Model:   viper.GetString("model"),
-	}
-	switch viper.GetString("backend") {
-	case "ollama":
-		return ollama.New(cfg), nil
-	case "llamacpp":
-		return llamacpp.New(cfg), nil
-	default:
-		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", viper.GetString("backend"))
 	}
 }

@@ -126,11 +126,28 @@ type RunResult struct {
 // final assistant answer. A reply without a tool call is final; a
 // reply with a TOOLCALL line executes the tool, appends the
 // observation to the history, and takes another turn.
+//
+// Run is stateless: each call starts a fresh conversation. Use Step
+// to continue one across multiple prompts.
 func (a *Agent) Run(ctx context.Context, prompt string) (RunResult, error) {
-	history := []backend.Message{
-		{Role: backend.RoleSystem, Content: a.system + a.toolDocs()},
-		{Role: backend.RoleUser, Content: prompt},
+	return a.Step(ctx, nil, prompt)
+}
+
+// Step runs one user prompt against an existing conversation and
+// returns the updated history alongside the answer. A nil or empty
+// history starts a fresh one (system prompt plus this prompt); the
+// history from a previous Step can be passed back in to continue the
+// session. Each Step gets its own turn budget.
+func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt string) (RunResult, error) {
+	if len(history) == 0 {
+		history = []backend.Message{
+			{Role: backend.RoleSystem, Content: a.system + a.toolDocs()},
+		}
 	}
+	history = append(history, backend.Message{
+		Role:    backend.RoleUser,
+		Content: prompt,
+	})
 
 	for turn := 1; turn <= a.maxTurns; turn++ {
 		a.logger.Debug("agent turn", zap.Int("turn", turn), zap.Int("messages", len(history)))
