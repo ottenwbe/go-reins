@@ -65,6 +65,12 @@ type Tool interface {
 // (RiskReadOnly) skip this gate.
 type Approver func(name, args string) bool
 
+// ToolObserver is notified of every tool call just before it runs,
+// with the tool name and its raw JSON arguments. It lets a UI
+// report which tool the agent is using; it has no influence on the
+// run.
+type ToolObserver func(name, args string)
+
 // Agent owns the conversation with a single backend.
 type Agent struct {
 	backend  backend.Backend
@@ -73,6 +79,7 @@ type Agent struct {
 	tools    []Tool
 	byName   map[string]Tool
 	approver Approver
+	observer ToolObserver
 	logger   *zap.Logger
 	maxTurns int
 }
@@ -96,6 +103,16 @@ func WithMaxTurns(n int) Option {
 func WithApprover(ap Approver) Option {
 	return func(a *Agent) {
 		a.approver = ap
+	}
+}
+
+// WithToolObserver installs a listener that is notified of every
+// tool call just before it runs. A nil observer is ignored.
+func WithToolObserver(o ToolObserver) Option {
+	return func(a *Agent) {
+		if o != nil {
+			a.observer = o
+		}
 	}
 }
 
@@ -191,6 +208,9 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		}
 
 		a.logger.Info("tool call", zap.String("tool", name), zap.String("args", args))
+		if a.observer != nil {
+			a.observer(name, args)
+		}
 
 		observation := a.executeTool(ctx, name, args)
 		a.logger.Debug("tool result", zap.String("tool", name), zap.Int("bytes", len(observation)))

@@ -29,8 +29,9 @@ Answer concisely and accurately.`
 // configuration: backend and model from cfg, the shell and read
 // tools, the logger, and the approver. A nil approver lets every
 // tool call through (--yes); a non-nil approver gates only mutating
-// tools (see agent.Risk).
-func NewAgent(cfg config.Config, approve agent.Approver) (*agent.Agent, error) {
+// tools (see agent.Risk). Extra agent options (e.g. a tool observer
+// for the UI) are appended after the built-ins.
+func NewAgent(cfg config.Config, approve agent.Approver, opts ...agent.Option) (*agent.Agent, error) {
 	logger, err := logging.New(cfg.LogLevel)
 	if err != nil {
 		return nil, err
@@ -45,7 +46,7 @@ func NewAgent(cfg config.Config, approve agent.Approver) (*agent.Agent, error) {
 		return nil, fmt.Errorf("no model set: use --model, config file, or GO_REINS_MODEL")
 	}
 
-	opts := []agent.Option{agent.WithLogger(logger)}
+	opts = append(opts, agent.WithLogger(logger))
 	if approve != nil {
 		opts = append(opts, agent.WithApprover(approve))
 	}

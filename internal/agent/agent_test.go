@@ -253,6 +253,32 @@ func TestRunApprovedByApprover(t *testing.T) {
 	}
 }
 
+// TestToolObserverNotified pins the observer seam: the observer sees
+// every tool call with name and arguments, before execution.
+func TestToolObserverNotified(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL weather {"city":"Berlin"}`},
+		{Content: "It is raining."},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+
+	var seen []string
+	a := New(fb, "test-model", "be brief", []Tool{weather},
+		WithToolObserver(func(name, args string) {
+			seen = append(seen, name+" "+args)
+		}))
+
+	if _, err := a.Run(context.Background(), "weather in Berlin?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != `weather {"city":"Berlin"}` {
+		t.Errorf("observer saw %v, want one call with name and args", seen)
+	}
+	if len(weather.calls) != 1 {
+		t.Errorf("tool calls = %d, want 1 (observer must not block execution)", len(weather.calls))
+	}
+}
+
 // TestReadOnlyToolSkipsApprover pins the risk tier: a read-only tool
 // runs even when the approver would deny everything.
 func TestReadOnlyToolSkipsApprover(t *testing.T) {

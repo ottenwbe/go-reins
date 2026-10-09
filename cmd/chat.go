@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"go-reins/internal/agent"
 	"go-reins/internal/session"
 	"go-reins/internal/tui"
 )
@@ -29,11 +30,13 @@ func chatSession(cmd *cobra.Command, args []string) error {
 	}
 
 	gate := tui.NewApprovalGate()
-	a, err := session.NewAgent(conf, session.GateApprover(gate, conf))
+	feed := tui.NewToolFeed()
+	a, err := session.NewAgent(conf, session.GateApprover(gate, conf),
+		agent.WithToolObserver(feed.Observer()))
 	if err != nil {
 		return err
 	}
 
 	header := fmt.Sprintf("go-reins chat · %s/%s", conf.Backend, conf.Model)
-	return tui.Chat(a, gate, header)
+	return tui.Chat(a, gate, feed, header)
 }
