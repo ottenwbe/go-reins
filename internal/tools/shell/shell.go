@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"go-reins/internal/agent"
 )
 
 const (
@@ -33,6 +35,10 @@ func New() *Shell {
 
 // Name implements agent.Tool.
 func (s *Shell) Name() string { return "shell" }
+
+// Risk implements agent.Tool: a shell command can change anything,
+// so every call is gated by the Approver.
+func (s *Shell) Risk() agent.Risk { return agent.RiskMutating }
 
 // Description implements agent.Tool.
 func (s *Shell) Description() string {

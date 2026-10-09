@@ -15,6 +15,7 @@ import (
 	"go-reins/internal/backend/ollama"
 	"go-reins/internal/config"
 	"go-reins/internal/logging"
+	"go-reins/internal/tools/read"
 	"go-reins/internal/tools/shell"
 	"go-reins/internal/tui"
 )
@@ -25,9 +26,10 @@ const systemPrompt = `You are a helpful assistant running inside a small agent h
 Answer concisely and accurately.`
 
 // NewAgent builds the agent for one session from the resolved
-// configuration: backend and model from cfg, the shell tool, the
-// logger, and the approver. A nil approver lets every tool call
-// through (--yes).
+// configuration: backend and model from cfg, the shell and read
+// tools, the logger, and the approver. A nil approver lets every
+// tool call through (--yes); a non-nil approver gates only mutating
+// tools (see agent.Risk).
 func NewAgent(cfg config.Config, approve agent.Approver) (*agent.Agent, error) {
 	logger, err := logging.New(cfg.LogLevel)
 	if err != nil {
@@ -52,7 +54,7 @@ func NewAgent(cfg config.Config, approve agent.Approver) (*agent.Agent, error) {
 		zap.String("backend", b.Name()),
 		zap.String("model", cfg.Model))
 
-	return agent.New(b, cfg.Model, systemPrompt, []agent.Tool{shell.New()}, opts...), nil
+	return agent.New(b, cfg.Model, systemPrompt, []agent.Tool{shell.New(), read.New()}, opts...), nil
 }
 
 // newBackend builds the backend selected by cfg. It cannot live in
