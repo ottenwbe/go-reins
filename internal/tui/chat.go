@@ -34,6 +34,7 @@ type chatModel struct {
 	cancel context.CancelFunc
 	agent  *agent.Agent
 	gate   *ApprovalGate
+	feed   *ToolFeed
 	header string
 	prompt string // prompt of the running step, for the status line
 
@@ -44,11 +45,12 @@ type chatModel struct {
 	spinner  spinner.Model
 	state    chatState
 	approval *ApprovalRequest
+	tool     ToolEvent // tool of the running step, for the status line
 	width    int
 	height   int
 }
 
-func newChatModel(a *agent.Agent, gate *ApprovalGate, header string) *chatModel {
+func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header string) *chatModel {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ta := textarea.New()
@@ -90,6 +92,7 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, header string) *chatModel 
 		cancel:   cancel,
 		agent:    a,
 		gate:     gate,
+		feed:     feed,
 		header:   header,
 		viewport: viewport.New(),
 		textarea: ta,
@@ -101,8 +104,11 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, header string) *chatModel 
 // Chat runs the interactive REPL until the operator quits. The alt
 // screen is requested by the View itself (v2 models declare terminal
 // state there); the transcript lives only as long as the session.
-func Chat(a *agent.Agent, gate *ApprovalGate, header string) error {
-	_, err := tea.NewProgram(newChatModel(a, gate, header)).Run()
+// The feed receives the agent's tool calls, so the status line can
+// show which tool is in use.
+func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header string) error {
+	defer feed.Close()
+	_, err := tea.NewProgram(newChatModel(a, gate, feed, header)).Run()
 	return err
 }
 
@@ -119,6 +125,11 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 
+	case ToolEvent:
+		// The agent switched tools; show it and keep listening.
+		m.tool = msg
+		return m, m.feed.Wait()
+
 	case stepDoneMsg:
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
@@ -126,7 +137,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.history = msg.res.History
 			m.appendLine(answerStyle.Render(msg.res.Answer))
 		}
-		m.prompt, m.state = "", chatReady
+		m.prompt, m.tool, m.state = "", ToolEvent{}, chatReady
 		return m, nil
 
 	case ApprovalRequest:
@@ -147,6 +158,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			m.cancel()
 			m.gate.Close()
+			m.feed.Close()
 			return m, tea.Quit
 		}
 		switch m.state {
@@ -190,6 +202,15 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// shorten caps the rendered args to a single status line; tool-call
+// arguments are single-line JSON by protocol.
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 // submit starts one agent step for the entered prompt.
 func (m *chatModel) submit() tea.Cmd {
 	prompt := strings.TrimSpace(m.textarea.Value())
@@ -201,13 +222,14 @@ func (m *chatModel) submit() tea.Cmd {
 	m.prompt = prompt
 	m.textarea.Reset()
 	m.layout() // the input shrank back to one line
+	m.tool = ToolEvent{}
 	m.state = chatBusy
 
 	step := func() tea.Msg {
 		res, err := m.agent.Step(m.ctx, m.history, prompt)
 		return stepDoneMsg{res: res, err: err}
 	}
-	return tea.Batch(step, m.gate.Wait(), m.spinner.Tick)
+	return tea.Batch(step, m.gate.Wait(), m.feed.Wait(), m.spinner.Tick)
 }
 
 // appendLine adds a rendered line to the transcript and scrolls to
@@ -241,7 +263,15 @@ func (m *chatModel) View() tea.View {
 	case chatBusy:
 		sb.WriteString(m.spinner.View())
 		sb.WriteString(" ")
-		sb.WriteString(dimStyle.Render("thinking…"))
+		if m.tool.Name != "" {
+			sb.WriteString(toolStyle.Render(m.tool.Name))
+			if m.tool.Args != "" {
+				sb.WriteString(" ")
+				sb.WriteString(dimStyle.Render(shorten(m.tool.Args, 60)))
+			}
+		} else {
+			sb.WriteString(dimStyle.Render("thinking…"))
+		}
 	case chatApproving:
 		sb.WriteString(fmt.Sprintf("allow? %s",
 			dimStyle.Render("[y] allow · [n] deny")))

@@ -28,6 +28,21 @@ const (
 
 var toolCallRe = regexp.MustCompile(toolCallPattern)
 
+// Risk classifies a tool by what an approved call can do to the
+// machine. It drives the approval policy: mutating tools go through
+// the Approver, read-only tools run without interrupting the
+// operator.
+type Risk int
+
+const (
+	// RiskReadOnly tools only observe: they cannot change machine
+	// state, so the agent loop runs them without approval.
+	RiskReadOnly Risk = iota
+	// RiskMutating tools can change machine state; every call is
+	// gated by the Approver.
+	RiskMutating
+)
+
 // Tool is a capability the agent can invoke. The model refers to a
 // tool by Name and passes single-line JSON arguments; Execute turns
 // them into a human-readable observation for the model.
@@ -36,16 +51,25 @@ type Tool interface {
 	Name() string
 	// Description tells the model what the tool is for.
 	Description() string
+	// Risk is the approval tier of the tool.
+	Risk() Risk
 	// Execute runs the tool with raw JSON arguments and returns
 	// a human-readable observation.
 	Execute(ctx context.Context, args string) (string, error)
 }
 
-// Approver gates every tool call before it runs — the human in the
-// loop. Returning false denies the call; the model receives the
-// denial as an observation and can react (ask the user, try another
-// way, or answer without the tool).
+// Approver gates every mutating tool call before it runs — the human
+// in the loop. Returning false denies the call; the model receives
+// the denial as an observation and can react (ask the user, try
+// another way, or answer without the tool). Read-only tools
+// (RiskReadOnly) skip this gate.
 type Approver func(name, args string) bool
+
+// ToolObserver is notified of every tool call just before it runs,
+// with the tool name and its raw JSON arguments. It lets a UI
+// report which tool the agent is using; it has no influence on the
+// run.
+type ToolObserver func(name, args string)
 
 // Agent owns the conversation with a single backend.
 type Agent struct {
@@ -55,6 +79,7 @@ type Agent struct {
 	tools    []Tool
 	byName   map[string]Tool
 	approver Approver
+	observer ToolObserver
 	logger   *zap.Logger
 	maxTurns int
 }
@@ -78,6 +103,16 @@ func WithMaxTurns(n int) Option {
 func WithApprover(ap Approver) Option {
 	return func(a *Agent) {
 		a.approver = ap
+	}
+}
+
+// WithToolObserver installs a listener that is notified of every
+// tool call just before it runs. A nil observer is ignored.
+func WithToolObserver(o ToolObserver) Option {
+	return func(a *Agent) {
+		if o != nil {
+			a.observer = o
+		}
 	}
 }
 
@@ -173,6 +208,9 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		}
 
 		a.logger.Info("tool call", zap.String("tool", name), zap.String("args", args))
+		if a.observer != nil {
+			a.observer(name, args)
+		}
 
 		observation := a.executeTool(ctx, name, args)
 		a.logger.Debug("tool result", zap.String("tool", name), zap.Int("bytes", len(observation)))
@@ -198,7 +236,7 @@ func (a *Agent) executeTool(ctx context.Context, name, args string) string {
 			name, strings.Join(names, ", "))
 	}
 
-	if a.approver != nil && !a.approver(name, args) {
+	if a.approver != nil && tool.Risk() == RiskMutating && !a.approver(name, args) {
 		a.logger.Warn("tool call denied by operator",
 			zap.String("tool", name), zap.String("args", args))
 		return fmt.Sprintf("tool call %q with args %s was not approved by the operator; "+

@@ -34,6 +34,7 @@ func (f *fakeBackend) Chat(_ context.Context, req backend.ChatRequest) (backend.
 type fakeTool struct {
 	name  string
 	desc  string
+	risk  Risk
 	calls []string
 	reply string
 	err   error
@@ -41,6 +42,7 @@ type fakeTool struct {
 
 func (f *fakeTool) Name() string        { return f.name }
 func (f *fakeTool) Description() string { return f.desc }
+func (f *fakeTool) Risk() Risk          { return f.risk }
 func (f *fakeTool) Execute(_ context.Context, args string) (string, error) {
 	f.calls = append(f.calls, args)
 	if f.err != nil {
@@ -200,7 +202,7 @@ func TestRunDeniedByApprover(t *testing.T) {
 		{Content: `TOOLCALL weather {"city":"Berlin"}`},
 		{Content: "I was not allowed to check."},
 	}}
-	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain", risk: RiskMutating}
 
 	var seen []string
 	approve := func(name, args string) bool {
@@ -234,7 +236,7 @@ func TestRunApprovedByApprover(t *testing.T) {
 		{Content: `TOOLCALL weather {"city":"Berlin"}`},
 		{Content: "It is raining."},
 	}}
-	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain", risk: RiskMutating}
 	a := New(fb, "test-model", "be brief", []Tool{weather}, WithApprover(func(name, args string) bool {
 		return name == "weather"
 	}))
@@ -248,6 +250,62 @@ func TestRunApprovedByApprover(t *testing.T) {
 	}
 	if len(weather.calls) != 1 {
 		t.Errorf("tool calls = %d, want 1 (approved call must execute)", len(weather.calls))
+	}
+}
+
+// TestToolObserverNotified pins the observer seam: the observer sees
+// every tool call with name and arguments, before execution.
+func TestToolObserverNotified(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL weather {"city":"Berlin"}`},
+		{Content: "It is raining."},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+
+	var seen []string
+	a := New(fb, "test-model", "be brief", []Tool{weather},
+		WithToolObserver(func(name, args string) {
+			seen = append(seen, name+" "+args)
+		}))
+
+	if _, err := a.Run(context.Background(), "weather in Berlin?"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != `weather {"city":"Berlin"}` {
+		t.Errorf("observer saw %v, want one call with name and args", seen)
+	}
+	if len(weather.calls) != 1 {
+		t.Errorf("tool calls = %d, want 1 (observer must not block execution)", len(weather.calls))
+	}
+}
+
+// TestReadOnlyToolSkipsApprover pins the risk tier: a read-only tool
+// runs even when the approver would deny everything.
+func TestReadOnlyToolSkipsApprover(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL peek {"path":"notes.txt"}`},
+		{Content: "I saw the notes."},
+	}}
+	peek := &fakeTool{name: "peek", desc: "peek at a file", reply: "nothing suspicious"}
+
+	gated := 0
+	a := New(fb, "test-model", "be brief", []Tool{peek}, WithApprover(func(name, args string) bool {
+		gated++
+		return false
+	}))
+
+	res, err := a.Run(context.Background(), "peek at notes.txt")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Answer != "I saw the notes." {
+		t.Errorf("Run reply = %q, want final answer", res.Answer)
+	}
+	if gated != 0 {
+		t.Errorf("approver called %d times, want 0 (read-only tool must skip the gate)", gated)
+	}
+	if len(peek.calls) != 1 {
+		t.Errorf("tool calls = %d, want 1 (read-only call must execute)", len(peek.calls))
 	}
 }
 
@@ -297,7 +355,7 @@ func TestRunLogsDeniedCall(t *testing.T) {
 		{Content: `TOOLCALL weather {"city":"Berlin"}`},
 		{Content: "No weather for you."},
 	}}
-	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain", risk: RiskMutating}
 
 	core, logs := observer.New(zapcore.InfoLevel)
 	logger := zap.New(core)

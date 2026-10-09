@@ -28,7 +28,8 @@ go-reins/
     │   ├── ollama/ollama.go       # adapter: native /api/chat
     │   └── llamacpp/llamacpp.go   # adapter: OpenAI-style /v1/chat/completions
     ├── tools/
-    │   └── shell/shell.go         # tool: run a shell command, return its output
+    │   ├── shell/shell.go         # tool: run a shell command, return its output
+    │   └── read/read.go           # tool: read a file under the working dir, with line numbers
     ├── config/
     │   └── config.go              # flags > env (GO_REINS_*) > YAML file > defaults
     ├── session/
@@ -60,8 +61,9 @@ Key design decisions:
   turns it used and returns the full conversation history for review
   (`RunResult`); `go-reins run` prints the turn count and offers
   `--history` to dump the transcript.
-- **Human in the loop**: an `Approver` gate shows every tool call
-  before execution. In a terminal, the bubbletea views (`internal/tui`)
+- **Human in the loop**: an `Approver` gate shows every mutating
+  tool call before execution (read-only tools run ungated, see the
+  risk tiers below). In a terminal, the bubbletea views (`internal/tui`)
   present each call as an approval dialog (`y`/`n`) unless `--yes` is
   set; without a TTY, `go-reins run` falls back to a plain `y/N` prompt
   on stdin. A denied call is fed back to the model as an observation.
@@ -75,6 +77,15 @@ Key design decisions:
   timeout and caps its output, so the agent can inspect the machine
   it runs on ("figure out which system you run on"). A non-zero exit
   status is an observation, not a failure.
+- **`internal/tools/read`** reads a file under the working directory
+  and returns it with 1-based line numbers (offset/limit window,
+  output capped). It is read-only by construction: paths must stay
+  inside the working directory, symlinks included.
+- **Risk tiers.** Every `agent.Tool` declares `agent.Risk` —
+  `RiskReadOnly` tools (`read`) run without interrupting the
+  operator, `RiskMutating` tools (`shell`) go through the Approver
+  gate. The approver stops being a blanket yes/no and becomes a
+  policy tied to what a tool can actually do.
 - **Configuration** lives in `internal/config` with an explicit
   precedence chain: CLI flags > environment (`GO_REINS_*`) > config
   file (YAML) > defaults. A flag only wins when it was explicitly
@@ -95,7 +106,7 @@ implementations — `session` wires them together:
 | Seam | Interface | Implementations |
 | --- | --- | --- |
 | Inference | `backend.Backend` | `ollama`, `llamacpp` |
-| Capability | `agent.Tool` | `tools/shell` |
+| Capability | `agent.Tool` | `tools/shell` (mutating), `tools/read` (read-only) |
 | Permission | `agent.Approver` | `tui.ApprovalGate` (bubbletea), stdin prompt (headless), nil = allow |
 | Observability | `*zap.Logger` | `internal/logging` (no-op default) |
 | Presentation | — (owns the terminal) | `tui` run view, `tui` chat REPL |
@@ -153,7 +164,7 @@ flowchart TD
     cmd --> session["session — agent assembly: backend, tool, and logger built from the resolved config"]
     cmd --> agent["agent — the loop; imports backend (types only) and zap"]
     cmd --> backends["backend/ollama, backend/llamacpp — adapters, picked by session"]
-    cmd --> shell["tools/shell — implements agent.Tool, registered by session"]
+    cmd --> tools["tools/shell, tools/read — implement agent.Tool, registered by session"]
     cmd --> config["config — resolves flags/env/file/defaults before commands run"]
     cmd --> tui["tui — bubbletea views; imports agent and the gate"]
     cmd --> logging["logging — builds the *zap.Logger session passes to agent"]

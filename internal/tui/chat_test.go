@@ -16,7 +16,7 @@ func TestChatModelStepFlow(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "the answer"}, "m", "sys", nil)
-	m := newChatModel(a, gate, "go-reins chat · stub/m")
+	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat · stub/m")
 	m.Init() // focuses the input area
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -68,13 +68,51 @@ func TestChatModelStepFlow(t *testing.T) {
 	}
 }
 
+// TestChatShowsCurrentTool verifies that tool events from the feed
+// show up in the busy view and clear when the step finishes.
+func TestChatShowsCurrentTool(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	feed := NewToolFeed()
+	defer feed.Close()
+	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
+	m := newChatModel(a, gate, feed, "go-reins chat · stub/m")
+	m.Init()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+
+	// A step is running; the agent reports the tool it is using.
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	if m.state != chatBusy {
+		t.Fatalf("state after submit = %v, want chatBusy", m.state)
+	}
+
+	next, _ = m.Update(ToolEvent{Name: "read", Args: `{"path":"notes.txt"}`})
+	m = next.(*chatModel)
+	view := m.View().Content
+	if !strings.Contains(view, "read") || !strings.Contains(view, "notes.txt") {
+		t.Errorf("busy view missing tool and args: %q", view)
+	}
+
+	// The step finishes and the tool line clears.
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "done"}})
+	m = next.(*chatModel)
+	if m.tool.Name != "" {
+		t.Errorf("tool after step = %q, want cleared", m.tool.Name)
+	}
+}
+
 // TestChatModelMultilineInput verifies that ctrl+j inserts a newline
 // into the prompt while enter still submits the whole text.
 func TestChatModelMultilineInput(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
-	m := newChatModel(a, gate, "go-reins chat · stub/m")
+	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat · stub/m")
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
