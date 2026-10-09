@@ -17,6 +17,9 @@ Working conventions for anyone (human or AI) changing this repository.
 - Vet: `go vet ./...`
 - Test: `go test ./...` (no live backend needed; tests use fakes and
   `httptest` servers)
+- `make` wraps all of these: `make build`, `make test`, `make vet`,
+  `make fmt`, `make check` (gofmt check + vet + test), and
+  `make licenses`
 
 ## Code conventions
 

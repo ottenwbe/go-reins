@@ -186,7 +186,13 @@ concrete implementations, which is what keeps the seams swappable.
 
 ```sh
 go build -o go-reins .
+# or
+make build
 ```
+
+A `Makefile` wraps the common tasks: `make build`, `make test`,
+`make vet`, `make fmt`, `make check` (everything CI runs), and
+`make licenses` (build, then list the dependency licenses).
 
 ## Usage
 
