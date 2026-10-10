@@ -5,7 +5,7 @@ BINARY   := go-reins
 PKG_DIRS := cmd internal
 
 .DEFAULT_GOAL := help
-.PHONY: help build test vet fmt fmt-check check licenses clean
+.PHONY: help build test vet fmt fmt-check check sbom sbom-check licenses clean
 
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -27,7 +27,17 @@ fmt-check: ## Fail when any file is not gofmt-clean
 	@out=$$(gofmt -l $(PKG_DIRS)); \
 	if [ -n "$$out" ]; then echo "not gofmt-clean:"; echo "$$out"; exit 1; fi
 
-check: fmt-check vet test ## Everything CI runs, locally
+sbom: build ## Regenerate the embedded CycloneDX SBOM and re-bake it
+	./$(BINARY) gen-sbom > internal/licenses/sbom.json
+	go build -o $(BINARY) .
+
+sbom-check: build ## Fail when the committed SBOM is stale
+	@tmp=$$(mktemp); ./$(BINARY) gen-sbom > $$tmp; \
+	if ! diff -q $$tmp internal/licenses/sbom.json >/dev/null; then \
+		echo "internal/licenses/sbom.json is stale; run make sbom"; rm -f $$tmp; exit 1; \
+	fi; rm -f $$tmp
+
+check: fmt-check vet test sbom-check ## Everything CI runs, locally
 
 licenses: build ## Build, then list the licenses of all dependencies
 	./$(BINARY) licenses

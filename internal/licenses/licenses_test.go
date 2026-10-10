@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 	"testing"
 )
 
@@ -129,22 +128,5 @@ func TestResolveAllSortsAndReports(t *testing.T) {
 	}
 	if entries[2].License != "Apache-2.0 / MIT" {
 		t.Errorf("dual entry = %+v, want both licenses", entries[2])
-	}
-}
-
-func TestListSortsByModule(t *testing.T) {
-	entries, err := List()
-	if err != nil {
-		t.Skipf("build info unavailable in this binary: %v", err)
-	}
-	// Test binaries carry build info but no dependency list; only a
-	// real build of the command reports modules.
-	if len(entries) == 0 {
-		t.Skip("no dependency entries in this binary")
-	}
-	for i := 1; i < len(entries); i++ {
-		if strings.Compare(entries[i-1].Module, entries[i].Module) > 0 {
-			t.Fatalf("entries not sorted: %q > %q", entries[i-1].Module, entries[i].Module)
-		}
 	}
 }

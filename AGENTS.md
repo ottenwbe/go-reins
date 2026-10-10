@@ -18,8 +18,9 @@ Working conventions for anyone (human or AI) changing this repository.
 - Test: `go test ./...` (no live backend needed; tests use fakes and
   `httptest` servers)
 - `make` wraps all of these: `make build`, `make test`, `make vet`,
-  `make fmt`, `make check` (gofmt check + vet + test), and
-  `make licenses`
+  `make fmt`, `make check` (gofmt check + vet + test + SBOM freshness),
+  `make licenses`, and `make sbom` (regenerate the embedded CycloneDX
+  SBOM — run it whenever go.mod changes)
 
 ## Code conventions
 
