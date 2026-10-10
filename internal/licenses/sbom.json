@@ -1,0 +1,300 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.7",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "name": "go-reins"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "charm.land/bubbles/v2",
+      "version": "v2.2.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/charm.land/bubbles/v2@v2.2.1"
+    },
+    {
+      "type": "library",
+      "name": "charm.land/bubbletea/v2",
+      "version": "v2.0.10",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/charm.land/bubbletea/v2@v2.0.10"
+    },
+    {
+      "type": "library",
+      "name": "charm.land/lipgloss/v2",
+      "version": "v2.0.6",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/charm.land/lipgloss/v2@v2.0.6"
+    },
+    {
+      "type": "library",
+      "name": "github.com/CycloneDX/cyclonedx-go",
+      "version": "v0.12.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "purl": "pkg:golang/github.com/CycloneDX/cyclonedx-go@v0.12.0"
+    },
+    {
+      "type": "library",
+      "name": "github.com/atotto/clipboard",
+      "version": "v0.1.4",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:golang/github.com/atotto/clipboard@v0.1.4"
+    },
+    {
+      "type": "library",
+      "name": "github.com/charmbracelet/colorprofile",
+      "version": "v0.4.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/charmbracelet/colorprofile@v0.4.3"
+    },
+    {
+      "type": "library",
+      "name": "github.com/charmbracelet/ultraviolet",
+      "version": "v0.0.0-20260811164956-006e29f97886",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/charmbracelet/ultraviolet@v0.0.0-20260811164956-006e29f97886"
+    },
+    {
+      "type": "library",
+      "name": "github.com/charmbracelet/x/ansi",
+      "version": "v0.11.8",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/charmbracelet/x/ansi@v0.11.8"
+    },
+    {
+      "type": "library",
+      "name": "github.com/charmbracelet/x/term",
+      "version": "v0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/charmbracelet/x/term@v0.2.2"
+    },
+    {
+      "type": "library",
+      "name": "github.com/charmbracelet/x/termios",
+      "version": "v0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/charmbracelet/x/termios@v0.1.1"
+    },
+    {
+      "type": "library",
+      "name": "github.com/charmbracelet/x/windows",
+      "version": "v0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/charmbracelet/x/windows@v0.2.2"
+    },
+    {
+      "type": "library",
+      "name": "github.com/clipperhouse/displaywidth",
+      "version": "v0.11.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/clipperhouse/displaywidth@v0.11.0"
+    },
+    {
+      "type": "library",
+      "name": "github.com/clipperhouse/uax29/v2",
+      "version": "v2.7.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/clipperhouse/uax29/v2@v2.7.0"
+    },
+    {
+      "type": "library",
+      "name": "github.com/lucasb-eyer/go-colorful",
+      "version": "v1.4.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/lucasb-eyer/go-colorful@v1.4.1"
+    },
+    {
+      "type": "library",
+      "name": "github.com/mattn/go-runewidth",
+      "version": "v0.0.30",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/mattn/go-runewidth@v0.0.30"
+    },
+    {
+      "type": "library",
+      "name": "github.com/muesli/cancelreader",
+      "version": "v0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/muesli/cancelreader@v0.2.2"
+    },
+    {
+      "type": "library",
+      "name": "github.com/rivo/uniseg",
+      "version": "v0.4.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/rivo/uniseg@v0.4.7"
+    },
+    {
+      "type": "library",
+      "name": "github.com/spf13/cobra",
+      "version": "v1.10.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "purl": "pkg:golang/github.com/spf13/cobra@v1.10.2"
+    },
+    {
+      "type": "library",
+      "name": "github.com/spf13/pflag",
+      "version": "v1.0.10",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:golang/github.com/spf13/pflag@v1.0.10"
+    },
+    {
+      "type": "library",
+      "name": "github.com/xo/terminfo",
+      "version": "v1.2.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/github.com/xo/terminfo@v1.2.0"
+    },
+    {
+      "type": "library",
+      "name": "go.uber.org/multierr",
+      "version": "v1.11.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/go.uber.org/multierr@v1.11.0"
+    },
+    {
+      "type": "library",
+      "name": "go.uber.org/zap",
+      "version": "v1.28.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:golang/go.uber.org/zap@v1.28.0"
+    },
+    {
+      "type": "library",
+      "name": "go.yaml.in/yaml/v3",
+      "version": "v3.0.5",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:golang/go.yaml.in/yaml/v3@v3.0.5"
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/sync",
+      "version": "v0.23.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:golang/golang.org/x/sync@v0.23.0"
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/sys",
+      "version": "v0.48.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:golang/golang.org/x/sys@v0.48.0"
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/term",
+      "version": "v0.46.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:golang/golang.org/x/term@v0.46.0"
+    }
+  ]
+}
