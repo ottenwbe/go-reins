@@ -105,6 +105,7 @@ standard cobra `completion` command.
 | `--tools` | `GO_REINS_TOOLS` | all tools | comma-separated tools to load, e.g. `read,shell`; an empty list loads none |
 | `--tool-risk` | `GO_REINS_TOOL_RISK` | tool's own tier | per-tool risk override, e.g. `shell=read-only` (`read-only`, `mutating`) |
 | `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
+| `--max-turns` | `GO_REINS_MAX_TURNS` | `8` | maximum backend round trips per run before the agent gives up (at least 1) |
 | `--history` | `GO_REINS_HISTORY` | `false` | print the conversation after the answer (`run` only) |
 | `--turns` | `GO_REINS_TURNS` | `false` | print how many turns the run took (`run` only) |
 | `--config` | — | `$HOME/.go-reins.yaml` | config file path |
@@ -185,7 +186,7 @@ request: the same gate locally and in CI.
 - [x] Hand-rolled config loader replacing viper, with load-time validation
 - [x] `read` tool with risk-tiered approvals and configurable tool loading
 - [x] Licenses command, embedded CycloneDX SBOM, build provenance (`info`)
-- [ ] `--max-turns` flag
+- [x] `--max-turns` flag
 - [ ] Streaming responses
 - [ ] `search` tool (glob + grep, read-only) and `edit` tool with
       diff approval in the TUI

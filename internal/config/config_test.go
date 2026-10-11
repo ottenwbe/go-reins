@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	flag "github.com/spf13/pflag"
+
+	"go-reins/internal/agent"
 )
 
 // newFlags builds a flag set with the same names and defaults as the
@@ -23,6 +25,7 @@ func newFlags(t *testing.T) *flag.FlagSet {
 	f.String("log-level", "error", "")
 	f.String("tools", "", "")
 	f.String("tool-risk", "", "")
+	f.Int("max-turns", agent.DefaultMaxTurns, "")
 	f.String("config", "", "")
 	return f
 }
@@ -33,7 +36,7 @@ func newFlags(t *testing.T) *flag.FlagSet {
 func isolate(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	for _, key := range []string{"BACKEND", "URL", "MODEL", "YES", "HISTORY", "TURNS", "LOG_LEVEL"} {
+	for _, key := range []string{"BACKEND", "URL", "MODEL", "YES", "HISTORY", "TURNS", "LOG_LEVEL", "MAX_TURNS"} {
 		t.Setenv(EnvPrefix+"_"+key, "")
 	}
 }
@@ -216,6 +219,93 @@ func TestToolRiskEnvRejectsGarbage(t *testing.T) {
 	}
 }
 
+// TestMaxTurnsPrecedence walks the whole chain for one key: a file
+// value applies when nothing else is set, env outranks the file,
+// and an explicitly set flag outranks both.
+func TestMaxTurnsPrecedence(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	writeFile(t, dir, ".go-reins.yaml", "max-turns: 3\n")
+	t.Setenv("HOME", dir)
+	t.Setenv(EnvPrefix+"_MAX_TURNS", "5")
+
+	flags := newFlags(t)
+	if err := flags.Parse([]string{"--max-turns", "7"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxTurns != 7 {
+		t.Errorf("MaxTurns = %d, want 7 (flag must win)", c.MaxTurns)
+	}
+
+	flags = newFlags(t)
+	if err := flags.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxTurns != 5 {
+		t.Errorf("MaxTurns = %d, want 5 (env must outrank file)", c.MaxTurns)
+	}
+
+	t.Setenv(EnvPrefix+"_MAX_TURNS", "")
+	flags = newFlags(t)
+	if err := flags.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	c, err = Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxTurns != 3 {
+		t.Errorf("MaxTurns = %d, want 3 (file applies when flag and env are unset)", c.MaxTurns)
+	}
+}
+
+// TestMaxTurnsRejectsInvalid fails at load, from every source: an
+// unparseable env var, a non-positive value from env, flag, or file.
+// A budget of 0 or less silently changing the default would be worse.
+func TestMaxTurnsRejectsInvalid(t *testing.T) {
+	t.Run("env garbage", func(t *testing.T) {
+		isolate(t)
+		t.Setenv(EnvPrefix+"_MAX_TURNS", "many")
+		if _, err := Load(newFlags(t)); err == nil {
+			t.Error("want error for unparseable max-turns env var")
+		}
+	})
+	t.Run("env zero", func(t *testing.T) {
+		isolate(t)
+		t.Setenv(EnvPrefix+"_MAX_TURNS", "0")
+		if _, err := Load(newFlags(t)); err == nil {
+			t.Error("want error for max-turns=0 from env")
+		}
+	})
+	t.Run("flag negative", func(t *testing.T) {
+		isolate(t)
+		flags := newFlags(t)
+		if err := flags.Parse([]string{"--max-turns", "-1"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(flags); err == nil {
+			t.Error("want error for negative max-turns flag")
+		}
+	})
+	t.Run("file zero", func(t *testing.T) {
+		isolate(t)
+		dir := t.TempDir()
+		writeFile(t, dir, ".go-reins.yaml", "max-turns: 0\n")
+		t.Setenv("HOME", dir)
+		if _, err := Load(newFlags(t)); err == nil {
+			t.Error("want error for max-turns: 0 in config file")
+		}
+	})
+}
+
 // TestDefaultModel pins the out-of-the-box model: changing it is a
 // product decision, not an accident.
 func TestDefaultModel(t *testing.T) {
@@ -236,6 +326,7 @@ func TestValidate(t *testing.T) {
 		"log level":    {LogLevel: "chatty"},
 		"tool risk":    {ToolRisk: map[string]string{"shell": "spicy"}},
 		"risk per env": {LogLevel: "info", ToolRisk: map[string]string{"read": "mutating", "shell": "nope"}},
+		"max turns":    {LogLevel: "info", MaxTurns: 0},
 	}
 	for name, cfg := range bad {
 		if err := cfg.Validate(); err == nil {
