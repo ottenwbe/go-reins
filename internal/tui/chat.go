@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
@@ -46,8 +47,29 @@ type chatModel struct {
 	state    chatState
 	approval *ApprovalRequest
 	tool     ToolEvent // tool of the running step, for the status line
+	step     *stepScope
 	width    int
 	height   int
+}
+
+// stepScope bounds the waiter Cmds armed for one agent step. When
+// the step ends - answer delivered, error, or quit - cancel closes
+// the scope's done channel and every waiter armed against it aborts
+// without delivering. Without this, each prompt leaves a blocked
+// gate and feed waiter behind for the lifetime of the session.
+type stepScope struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newStepScope() *stepScope {
+	return &stepScope{done: make(chan struct{})}
+}
+
+func (s *stepScope) cancel() {
+	if s != nil {
+		s.once.Do(func() { close(s.done) })
+	}
 }
 
 func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header string) *chatModel {
@@ -126,11 +148,21 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ToolEvent:
+		// A tool event from a step that already ended (racing the
+		// final answer) is noise: drop it instead of reviving the
+		// status line and arming a new waiter while idle.
+		if m.state != chatBusy {
+			return m, nil
+		}
 		// The agent switched tools; show it and keep listening.
 		m.tool = msg
-		return m, m.feed.Wait()
+		return m, m.feed.WaitOn(m.step.done)
 
 	case stepDoneMsg:
+		// The step is over: cancel its waiters so they cannot
+		// linger into the next prompt, then show the outcome.
+		m.step.cancel()
+		m.step = nil
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
 		} else {
@@ -159,6 +191,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			m.gate.Close()
 			m.feed.Close()
+			m.step.cancel()
 			return m, tea.Quit
 		}
 		switch m.state {
@@ -168,12 +201,12 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendLine(dimStyle.Render("allowed"))
 				m.approval.Reply <- true
 				m.approval, m.state = nil, chatBusy
-				return m, m.gate.Wait()
+				return m, m.gate.WaitOn(m.step.done)
 			case "n", "N", "esc":
 				m.appendLine(dimStyle.Render("denied"))
 				m.approval.Reply <- false
 				m.approval, m.state = nil, chatBusy
-				return m, m.gate.Wait()
+				return m, m.gate.WaitOn(m.step.done)
 			}
 			return m, nil
 		case chatBusy:
@@ -225,11 +258,17 @@ func (m *chatModel) submit() tea.Cmd {
 	m.tool = ToolEvent{}
 	m.state = chatBusy
 
+	// One waiter per channel, scoped to this step: cancel any scope
+	// left over from an earlier step, then arm fresh waits that die
+	// with the step.
+	m.step.cancel()
+	m.step = newStepScope()
+
 	step := func() tea.Msg {
 		res, err := m.agent.Step(m.ctx, m.history, prompt)
 		return stepDoneMsg{res: res, err: err}
 	}
-	return tea.Batch(step, m.gate.Wait(), m.feed.Wait(), m.spinner.Tick)
+	return tea.Batch(step, m.gate.WaitOn(m.step.done), m.feed.WaitOn(m.step.done), m.spinner.Tick)
 }
 
 // appendLine adds a rendered line to the transcript and scrolls to

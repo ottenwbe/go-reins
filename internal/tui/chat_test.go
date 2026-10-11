@@ -140,3 +140,61 @@ func TestChatModelMultilineInput(t *testing.T) {
 		t.Errorf("submitted prompt = %q, want multi-line prompt", m.prompt)
 	}
 }
+
+// TestChatDropsStaleToolEvents pins the waiter scoping fix: once a
+// step has ended, a tool event that raced the final answer must be
+// dropped instead of reviving the busy status line - and must not
+// arm a new waiter while the model is idle.
+func TestChatDropsStaleToolEvents(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	feed := NewToolFeed()
+	defer feed.Close()
+	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
+	m := newChatModel(a, gate, feed, "go-reins chat · stub/m")
+	m.Init()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+
+	// Run one step to completion; the step scope is canceled on
+	// stepDoneMsg.
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "done"}})
+	m = next.(*chatModel)
+	if m.state != chatReady {
+		t.Fatalf("state after step = %v, want chatReady", m.state)
+	}
+
+	// A tool event delivered after the step ended: dropped, the
+	// status line stays idle, and no waiter is re-armed (Update
+	// returns a nil Cmd).
+	next, cmd := m.Update(ToolEvent{Name: "read", Args: `{"path":"late.txt"}`})
+	m = next.(*chatModel)
+	if cmd != nil {
+		t.Errorf("stale ToolEvent armed a waiter: %v", cmd)
+	}
+	if m.tool.Name != "" {
+		t.Errorf("stale ToolEvent set the status line: %q", m.tool.Name)
+	}
+	if m.state != chatReady {
+		t.Errorf("state after stale event = %v, want chatReady", m.state)
+	}
+}
+
+func TestStepScopeCancelIsIdempotent(t *testing.T) {
+	s := newStepScope()
+	s.cancel()
+	s.cancel() // must not panic
+	select {
+	case <-s.done:
+	default:
+		t.Fatal("done channel not closed after cancel")
+	}
+	// The nil scope tolerates cancel: chatReady models have none.
+	var none *stepScope
+	none.cancel()
+}
