@@ -3,7 +3,7 @@ package licenses
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime/debug"
 	"testing"
 )
 
@@ -35,9 +35,26 @@ the names of its contributors may be used to endorse or promote.`
 	}
 }
 
+// TestClassifyDualLicense pins the refactor's headline behavior: a
+// file carrying MIT and Apache text reports both, in pattern-table
+// order - yaml.in ships exactly this shape.
+func TestClassifyDualLicense(t *testing.T) {
+	text := `This project is covered by two different licenses: MIT and Apache.
+
+#### MIT License ####
+Permission is hereby granted, free of charge, to any person
+
+#### Apache License ####
+Apache License
+Version 2.0, January 2004`
+	if got := classify(text); got != "Apache-2.0 / MIT" {
+		t.Errorf("classify dual = %q, want %q", got, "Apache-2.0 / MIT")
+	}
+}
+
 func TestClassifyUnknown(t *testing.T) {
-	if got := classify("made up license text"); got != "" {
-		t.Errorf("classify unknown = %q, want \"\"", got)
+	if got := classify("made up license text"); got != "unknown" {
+		t.Errorf("classify unknown = %q, want unknown", got)
 	}
 }
 
@@ -77,19 +94,39 @@ func TestResolveDegradesToUnknown(t *testing.T) {
 	}
 }
 
-func TestListSortsByModule(t *testing.T) {
-	entries, err := List()
-	if err != nil {
-		t.Skipf("build info unavailable in this binary: %v", err)
+// TestResolveAllSortsAndReports drives the whole pipeline with a
+// synthetic build info and cache: sorted output, replaced modules
+// resolved through their replacement, dual licenses reported.
+func TestResolveAllSortsAndReports(t *testing.T) {
+	cache := t.TempDir()
+	dual := filepath.Join(cache, "example.com", "yaml@v3.1.0")
+	if err := os.MkdirAll(dual, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	// Test binaries carry build info but no dependency list; only a
-	// real build of the command reports modules.
-	if len(entries) == 0 {
-		t.Skip("no dependency entries in this binary")
+	dualText := "MIT License\nPermission is hereby granted.\nApache License\nVersion 2.0"
+	if err := os.WriteFile(filepath.Join(dual, "LICENSE"), []byte(dualText), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for i := 1; i < len(entries); i++ {
-		if strings.Compare(entries[i-1].Module, entries[i].Module) > 0 {
-			t.Fatalf("entries not sorted: %q > %q", entries[i-1].Module, entries[i].Module)
-		}
+
+	info := &debug.BuildInfo{
+		Deps: []*debug.Module{
+			{Path: "example.com/yaml", Version: "v3.1.0"},
+			{Path: "example.com/old", Version: "v0.1.0", Replace: &debug.Module{Path: "example.com/yaml", Version: "v3.1.0"}},
+			{Path: "example.com/absent", Version: "v0.2.0"},
+		},
+	}
+	entries := resolveAll(info, cache)
+
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(entries))
+	}
+	if entries[0].Module != "example.com/absent" || entries[0].License != "unknown" {
+		t.Errorf("first entry = %+v, want absent/unknown", entries[0])
+	}
+	if entries[1].Module != "example.com/yaml" || entries[1].License != "Apache-2.0 / MIT" {
+		t.Errorf("replaced entry = %+v, want the replacement module with both licenses", entries[1])
+	}
+	if entries[2].License != "Apache-2.0 / MIT" {
+		t.Errorf("dual entry = %+v, want both licenses", entries[2])
 	}
 }

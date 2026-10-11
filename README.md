@@ -186,7 +186,13 @@ concrete implementations, which is what keeps the seams swappable.
 
 ```sh
 go build -o go-reins .
+# or
+make build
 ```
+
+A `Makefile` wraps the common tasks: `make build`, `make test`,
+`make vet`, `make fmt`, `make check` (everything CI runs), and
+`make licenses` (build, then list the dependency licenses).
 
 ## Usage
 
@@ -227,9 +233,28 @@ against:
 ./go-reins licenses
 ```
 
-Modules and versions come from the build info embedded in the
-binary; license texts are read from the local Go module cache and
-classified against common SPDX signatures (`internal/licenses`).
+The data comes from a CycloneDX SBOM (`internal/licenses/sbom.json`)
+that is generated at build time from the module cache and baked into
+the binary via `go:embed` — so the command needs no Go toolchain on
+the machine it runs on. `make sbom` regenerates it; `make check`
+fails when the committed SBOM is stale.
+
+> **Experimental.** The licenses command and the SBOM machinery are
+> a learning ground for what Go and a CLI can do — `go:embed`,
+> build info, the module cache, the CycloneDX schema, make-time
+> generation. Do not rely on it for license compliance decisions.
+
+Show how this binary was built — version, git revision, build time:
+
+```sh
+./go-reins info
+```
+
+The version defaults to `git describe` output and can be pinned:
+
+```sh
+make build VERSION=1.0.0
+```
 
 ### Flags and configuration
 
