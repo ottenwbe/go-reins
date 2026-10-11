@@ -236,7 +236,7 @@ against:
 The data comes from a CycloneDX SBOM (`internal/licenses/sbom.json`)
 that is generated at build time from the module cache and baked into
 the binary via `go:embed` — so the command needs no Go toolchain on
-the machine it runs on. `make sbom` regenerates it; `make check`
+the machine it runs on. `make build` regenerates it; `make check`
 fails when the committed SBOM is stale.
 
 > **Experimental.** The licenses command and the SBOM machinery are

@@ -31,7 +31,7 @@ type Entry struct {
 
 // List returns the dependencies from the SBOM embedded at build
 // time. It needs no module cache and no build environment - the
-// file was baked in by `make sbom`.
+// file was baked in by `make build`.
 func List() ([]Entry, error) {
 	return parseSBOM(sbomData)
 }
