@@ -127,13 +127,13 @@ func resolveInWorkdir(path string) (string, error) {
 }
 
 // readWindow streams the file and returns the requested window of
-// lines - the file is never loaded whole, so a multi-gigabyte file
-// costs only the window's memory, and skipped lines are never held.
-// The offset is 1-based; zero or negative means 1. The limit
-// defaults to defaultLimit and is capped at maxLimit. Lines are
-// capped at maxLineLen and the window at maxOutput bytes in total;
-// truncated reports that either cap hit. Binary detection sees only
-// the requested window, not the whole file.
+// lines - the file is never loaded whole, and no line is ever held
+// beyond maxLineLen bytes, so neither a huge file nor a huge line
+// costs memory. The offset is 1-based; zero or negative means 1.
+// The limit defaults to defaultLimit and is capped at maxLimit.
+// Lines are capped at maxLineLen and the window at maxOutput bytes
+// in total; truncated reports that either cap hit. Binary detection
+// sees only the requested window, not the whole file.
 func readWindow(path string, offset, limit int) (lines []string, truncated bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -151,28 +151,34 @@ func readWindow(path string, offset, limit int) (lines []string, truncated bool,
 		limit = maxLimit
 	}
 
-	r := bufio.NewReader(f)
+	r := bufio.NewReaderSize(f, 64*1024)
+	// Skipping drains without retaining anything (limit 0).
 	for i := 1; i < offset; i++ {
-		if _, err := r.ReadString('\n'); err != nil {
+		if _, _, err := readCappedLine(r, 0); err != nil {
 			return nil, false, fmt.Errorf("offset %d is beyond the end of the file", offset)
 		}
 	}
 
 	total := 0
 	for len(lines) < limit {
-		line, err := r.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return nil, false, fmt.Errorf("read file: %w", err)
+		line, tooLong, rerr := readCappedLine(r, maxLineLen)
+		// EOF before the window produced anything: an empty file
+		// is an empty file, but with lines skipped it means the
+		// offset points past the last line.
+		if rerr == io.EOF && line == "" {
+			if len(lines) == 0 && offset > 1 {
+				return nil, false, fmt.Errorf("offset %d is beyond the end of the file", offset)
+			}
+			break
 		}
-		if line == "" {
-			break // clean EOF
+		if rerr != nil && rerr != io.EOF {
+			return nil, false, fmt.Errorf("read file: %w", rerr)
 		}
-		line = strings.TrimSuffix(line, "\n")
 		if strings.ContainsRune(line, 0x00) {
 			return nil, false, errors.New("binary file, refusing to read")
 		}
-		if len(line) > maxLineLen {
-			line = line[:maxLineLen] + "…"
+		if tooLong {
+			line += "…"
 			truncated = true
 		}
 		if total+len(line) > maxOutput {
@@ -183,6 +189,28 @@ func readWindow(path string, offset, limit int) (lines []string, truncated bool,
 		total += len(line)
 	}
 	return lines, truncated, nil
+}
+
+// readCappedLine reads one line, retaining at most the first limit
+// bytes of it: ReadString would buffer a multi-megabyte line whole
+// before the caller could truncate it, so this drains through the
+// newline and drops everything past the cap. tooLong reports the
+// cut. A limit of 0 drains the line and returns nothing.
+func readCappedLine(r *bufio.Reader, limit int) (line string, tooLong bool, err error) {
+	var kept []byte
+	for {
+		chunk, rerr := r.ReadSlice('\n')
+		if room := limit - len(kept); len(chunk) <= room {
+			kept = append(kept, chunk...)
+		} else {
+			kept = append(kept, chunk[:max(room, 0)]...)
+			tooLong = true
+		}
+		if rerr == bufio.ErrBufferFull {
+			continue // no newline yet: drain on, retained part stays capped
+		}
+		return strings.TrimSuffix(string(kept), "\n"), tooLong, rerr
+	}
 }
 
 // render numbers the lines of the window; readWindow has already

@@ -204,3 +204,43 @@ func TestReadOffsetBeyondEnd(t *testing.T) {
 		t.Error("offset past EOF: want error")
 	}
 }
+
+// TestReadOffsetOnePastLastLine pins the trailing-newline boundary:
+// an offset that points exactly one line past the last real line
+// must report out-of-range, not "(empty file)".
+func TestReadOffsetOnePastLastLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "two.txt", "one\ntwo\n")
+
+	if _, err := call(t, `{"path":"two.txt","offset":3}`); err == nil {
+		t.Error("offset one past last line: want error")
+	}
+
+	// One line further is still an error, and so is skipping past a
+	// file whose last line has no newline.
+	if _, err := call(t, `{"path":"two.txt","offset":9}`); err == nil {
+		t.Error("offset far past end: want error")
+	}
+	writeFile(t, dir, "nonl.txt", "only")
+	if _, err := call(t, `{"path":"nonl.txt","offset":2}`); err == nil {
+		t.Error("offset past last line without newline: want error")
+	}
+}
+
+// TestReadEmptyFileStillReportsAsEmpty makes sure the boundary fix
+// did not eat the legitimate case: a zero-byte file is an empty
+// file, not an out-of-range offset.
+func TestReadEmptyFileStillReportsAsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "empty.txt", "")
+
+	out, err := call(t, `{"path":"empty.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out != "(empty file)" {
+		t.Errorf("empty file output = %q, want (empty file)", out)
+	}
+}
