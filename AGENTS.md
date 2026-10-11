@@ -31,6 +31,7 @@ Working conventions for anyone (human or AI) changing this repository.
 - New capabilities go behind an interface in `internal/` when more than
   one implementation or caller is expected (see `backend.Backend`,
   `agent.Tool`, `agent.Approver`).
-- CLI-facing behavior is configured via cobra flags bound to viper
-  (`GO_REINS_*` env prefix); user-facing output goes to stdout,
+- CLI-facing behavior is configured via cobra flags resolved by the
+  hand-rolled config chain (flags > `GO_REINS_*` env > YAML file >
+  defaults, validated at load); user-facing output goes to stdout,
   diagnostics (logs, prompts, history dumps) to stderr.
