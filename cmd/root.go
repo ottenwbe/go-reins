@@ -50,4 +50,6 @@ func init() {
 	flags.String("model", "", "model name, e.g. llama3.2 or qwen2.5")
 	flags.Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
 	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
+	flags.String("tools", "", "comma-separated tools to load, e.g. read,shell (default: all)")
+	flags.String("tool-risk", "", "per-tool risk override, e.g. shell=read-only (values: read-only, mutating)")
 }

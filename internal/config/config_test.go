@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	flag "github.com/spf13/pflag"
@@ -20,6 +21,8 @@ func newFlags(t *testing.T) *flag.FlagSet {
 	f.Bool("history", false, "")
 	f.Bool("turns", false, "")
 	f.String("log-level", "error", "")
+	f.String("tools", "", "")
+	f.String("tool-risk", "", "")
 	f.String("config", "", "")
 	return f
 }
@@ -50,7 +53,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c != Defaults() {
+	if !reflect.DeepEqual(c, Defaults()) {
 		t.Errorf("want defaults, got %+v", c)
 	}
 }
@@ -125,5 +128,90 @@ func TestLoadExplicitConfigFileMustExist(t *testing.T) {
 	}
 	if _, err := Load(flags); err == nil {
 		t.Error("want error for missing explicit config file")
+	}
+}
+
+func TestToolsFromFlag(t *testing.T) {
+	isolate(t)
+	flags := newFlags(t)
+	if err := flags.Parse([]string{"--tools", " read , shell "}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Tools, []string{"read", "shell"}) {
+		t.Errorf("Tools = %v, want [read shell]", c.Tools)
+	}
+}
+
+func TestToolsFromEnv(t *testing.T) {
+	isolate(t)
+	t.Setenv(EnvPrefix+"_TOOLS", "read")
+	c, err := Load(newFlags(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Tools, []string{"read"}) {
+		t.Errorf("Tools = %v, want [read]", c.Tools)
+	}
+}
+
+func TestToolsFromFile(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conf.yaml")
+	if err := os.WriteFile(path, []byte("tools: [read, shell]\ntool-risk:\n  shell: read-only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flags := newFlags(t)
+	if err := flags.Parse([]string{"--config", path}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Tools, []string{"read", "shell"}) {
+		t.Errorf("Tools = %v", c.Tools)
+	}
+	if !reflect.DeepEqual(c.ToolRisk, map[string]string{"shell": "read-only"}) {
+		t.Errorf("ToolRisk = %v", c.ToolRisk)
+	}
+}
+
+func TestToolsFlagOverridesEnv(t *testing.T) {
+	isolate(t)
+	t.Setenv(EnvPrefix+"_TOOLS", "read,shell")
+	flags := newFlags(t)
+	if err := flags.Parse([]string{"--tools", "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Tools, []string{"shell"}) {
+		t.Errorf("Tools = %v, want flag to win", c.Tools)
+	}
+}
+
+func TestToolRiskFlagRejectsGarbage(t *testing.T) {
+	isolate(t)
+	flags := newFlags(t)
+	if err := flags.Parse([]string{"--tool-risk", "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(flags); err == nil {
+		t.Error("want error for pair without =")
+	}
+}
+
+func TestToolRiskEnvRejectsGarbage(t *testing.T) {
+	isolate(t)
+	t.Setenv(EnvPrefix+"_TOOL_RISK", "nonsense")
+	if _, err := Load(newFlags(t)); err == nil {
+		t.Error("want error for unparseable risk env var")
 	}
 }

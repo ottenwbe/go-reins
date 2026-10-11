@@ -28,6 +28,14 @@ type Config struct {
 	History  bool   // dump the conversation after the answer
 	Turns    bool   // report how many turns the run took
 	LogLevel string // zap level: debug, info, warn, error
+
+	// Tools selects which agent tools load, by name. Nil means all
+	// available tools; an explicitly empty list loads none.
+	Tools []string
+	// ToolRisk overrides the risk tier of individual tools, by name:
+	// "read-only" or "mutating". Keys for unknown tools are an error
+	// at assembly time.
+	ToolRisk map[string]string
 }
 
 // Defaults returns the configuration used when nothing else is set.
@@ -52,19 +60,23 @@ func Load(flags *flag.FlagSet) (Config, error) {
 	if err := applyEnv(&c); err != nil {
 		return c, err
 	}
-	applyFlags(&c, flags)
+	if err := applyFlags(&c, flags); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
 // fileConfig mirrors the YAML config file schema.
 type fileConfig struct {
-	Backend  string `yaml:"backend"`
-	URL      string `yaml:"url"`
-	Model    string `yaml:"model"`
-	Yes      bool   `yaml:"yes"`
-	History  bool   `yaml:"history"`
-	Turns    bool   `yaml:"turns"`
-	LogLevel string `yaml:"log-level"`
+	Backend  string            `yaml:"backend"`
+	URL      string            `yaml:"url"`
+	Model    string            `yaml:"model"`
+	Yes      bool              `yaml:"yes"`
+	History  bool              `yaml:"history"`
+	Turns    bool              `yaml:"turns"`
+	LogLevel string            `yaml:"log-level"`
+	Tools    []string          `yaml:"tools"`
+	ToolRisk map[string]string `yaml:"tool-risk"`
 }
 
 // applyFile loads the YAML config file, if any, into c. An explicit
@@ -120,6 +132,14 @@ func readInto(c *Config, path string) error {
 	c.Yes = fc.Yes
 	c.History = fc.History
 	c.Turns = fc.Turns
+	// Slices and maps are nil when absent, which keeps "not set"
+	// distinct from "set to empty".
+	if fc.Tools != nil {
+		c.Tools = fc.Tools
+	}
+	if fc.ToolRisk != nil {
+		c.ToolRisk = fc.ToolRisk
+	}
 
 	fmt.Fprintln(os.Stderr, "using config file:", path)
 	return nil
@@ -168,11 +188,46 @@ func applyEnv(c *Config) error {
 			return err
 		}
 	}
+	if v := str("tools"); v != "" {
+		c.Tools = splitList(v)
+	}
+	if v := str("tool-risk"); v != "" {
+		risk, err := parseKeyValues(v)
+		if err != nil {
+			return fmt.Errorf("env %s_TOOL_RISK: %w", EnvPrefix, err)
+		}
+		c.ToolRisk = risk
+	}
 	return nil
 }
 
+// splitList turns "a, b ,c" into ["a","b","c"]; empty entries are
+// dropped.
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// parseKeyValues turns "shell=read-only,read=mutating" into a map.
+func parseKeyValues(s string) (map[string]string, error) {
+	out := make(map[string]string)
+	for _, pair := range splitList(s) {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok {
+			return nil, fmt.Errorf("expected name=value, got %q", pair)
+		}
+		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return out, nil
+}
+
 // applyFlags overlays explicitly set flags; they outrank everything.
-func applyFlags(c *Config, flags *flag.FlagSet) {
+func applyFlags(c *Config, flags *flag.FlagSet) error {
 	if fl := flags.Lookup("backend"); fl != nil && fl.Changed {
 		c.Backend = fl.Value.String()
 	}
@@ -194,4 +249,15 @@ func applyFlags(c *Config, flags *flag.FlagSet) {
 	if fl := flags.Lookup("turns"); fl != nil && fl.Changed {
 		c.Turns, _ = strconv.ParseBool(fl.Value.String())
 	}
+	if fl := flags.Lookup("tools"); fl != nil && fl.Changed {
+		c.Tools = splitList(fl.Value.String())
+	}
+	if fl := flags.Lookup("tool-risk"); fl != nil && fl.Changed {
+		risk, err := parseKeyValues(fl.Value.String())
+		if err != nil {
+			return fmt.Errorf("flag --tool-risk: %w", err)
+		}
+		c.ToolRisk = risk
+	}
+	return nil
 }

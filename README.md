@@ -267,6 +267,8 @@ make build VERSION=1.0.0
 | `--history` | `GO_REINS_HISTORY` | `false` | print the full conversation after the answer |
 | `--turns` | `GO_REINS_TURNS` | `false` | print how many turns the run took |
 | `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
+| `--tools` | `GO_REINS_TOOLS` | all tools | comma-separated tools to load, e.g. `read,shell`; an empty list loads none |
+| `--tool-risk` | `GO_REINS_TOOL_RISK` | tool's own tier | per-tool risk override, e.g. `shell=read-only` (values: `read-only`, `mutating`) |
 | `--config` | — | `$HOME/.go-reins.yaml` | config file path |
 
 Configuration resolves as CLI flags > environment (`GO_REINS_*`) >
@@ -279,7 +281,16 @@ Config file example (`~/.go-reins.yaml`):
 backend: ollama
 model: llama3.2
 url: http://localhost:11434
+tools: [read, shell]
+tool-risk:
+  shell: read-only   # sandboxed shell: no approval prompt
 ```
+
+`tools` selects which tools the agent loads (missing = all). `tool-risk`
+overrides how the approval gate scores a tool — the operator, not the
+tool, decides whether a call needs confirmation. Unknown tool names
+and invalid risk values fail at startup instead of silently changing
+behavior.
 
 ## Tests
 

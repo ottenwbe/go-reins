@@ -43,6 +43,18 @@ const (
 	RiskMutating
 )
 
+// ParseRisk maps a configuration string to a Risk tier: "read-only"
+// or "mutating", case-insensitive.
+func ParseRisk(s string) (Risk, error) {
+	switch strings.ToLower(s) {
+	case "read-only":
+		return RiskReadOnly, nil
+	case "mutating":
+		return RiskMutating, nil
+	}
+	return 0, fmt.Errorf("invalid risk %q: expected read-only or mutating", s)
+}
+
 // Tool is a capability the agent can invoke. The model refers to a
 // tool by Name and passes single-line JSON arguments; Execute turns
 // them into a human-readable observation for the model.
