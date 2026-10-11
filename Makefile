@@ -4,6 +4,12 @@
 BINARY   := go-reins
 PKG_DIRS := cmd internal
 
+# The version stamped into the binary (`go-reins info` reports it).
+# Defaults to the latest tag plus commits and dirtiness, e.g.
+# v0.1.0-3-gbf45b49-dirty; falls back to "dev" outside a git repo.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GO_BUILD = go build -ldflags "-X go-reins/cmd.version=$(VERSION)" -o $(BINARY) .
+
 .DEFAULT_GOAL := help
 .PHONY: help build test vet fmt fmt-check check sbom sbom-check licenses clean
 
@@ -12,7 +18,7 @@ help: ## Show the available targets
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[1m%-10s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the go-reins binary into the working directory
-	go build -o $(BINARY) .
+	$(GO_BUILD)
 
 test: ## Run the full test suite
 	go test ./...
@@ -29,7 +35,7 @@ fmt-check: ## Fail when any file is not gofmt-clean
 
 sbom: build ## Regenerate the embedded CycloneDX SBOM and re-bake it
 	./$(BINARY) gen-sbom > internal/licenses/sbom.json
-	go build -o $(BINARY) .
+	$(GO_BUILD)
 
 sbom-check: build ## Fail when the committed SBOM is stale
 	@tmp=$$(mktemp); ./$(BINARY) gen-sbom > $$tmp; \

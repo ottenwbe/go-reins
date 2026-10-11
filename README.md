@@ -239,6 +239,18 @@ the binary via `go:embed` — so the command needs no Go toolchain on
 the machine it runs on. `make sbom` regenerates it; `make check`
 fails when the committed SBOM is stale.
 
+Show how this binary was built — version, git revision, build time:
+
+```sh
+./go-reins info
+```
+
+The version defaults to `git describe` output and can be pinned:
+
+```sh
+make build VERSION=1.0.0
+```
+
 ### Flags and configuration
 
 | Flag | Env | Default | Description |
