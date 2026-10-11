@@ -43,6 +43,18 @@ const (
 	RiskMutating
 )
 
+// ParseRisk maps a configuration string to a Risk tier: "read-only"
+// or "mutating", case-insensitive.
+func ParseRisk(s string) (Risk, error) {
+	switch strings.ToLower(s) {
+	case "read-only":
+		return RiskReadOnly, nil
+	case "mutating":
+		return RiskMutating, nil
+	}
+	return 0, fmt.Errorf("invalid risk %q: expected read-only or mutating", s)
+}
+
 // Tool is a capability the agent can invoke. The model refers to a
 // tool by Name and passes single-line JSON arguments; Execute turns
 // them into a human-readable observation for the model.
@@ -174,11 +186,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (RunResult, error) {
 // history from a previous Step can be passed back in to continue the
 // session. Each Step gets its own turn budget.
 func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt string) (RunResult, error) {
-	if len(history) == 0 {
-		history = []backend.Message{
-			{Role: backend.RoleSystem, Content: a.system + a.toolDocs()},
-		}
-	}
+	history = a.seedHistory(history)
 	history = append(history, backend.Message{
 		Role:    backend.RoleUser,
 		Content: prompt,
@@ -187,15 +195,10 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 	for turn := 1; turn <= a.maxTurns; turn++ {
 		a.logger.Debug("agent turn", zap.Int("turn", turn), zap.Int("messages", len(history)))
 
-		resp, err := a.backend.Chat(ctx, backend.ChatRequest{
-			Model:    a.model,
-			Messages: history,
-		})
+		resp, err := a.chat(ctx, turn, history)
 		if err != nil {
-			a.logger.Warn("backend chat failed", zap.Int("turn", turn), zap.Error(err))
-			return RunResult{}, fmt.Errorf("agent: turn %d: %w", turn, err)
+			return RunResult{}, err
 		}
-
 		history = append(history, backend.Message{
 			Role:    backend.RoleAssistant,
 			Content: resp.Content,
@@ -207,20 +210,54 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 			return RunResult{Answer: resp.Content, Turns: turn, History: history}, nil
 		}
 
-		a.logger.Info("tool call", zap.String("tool", name), zap.String("args", args))
-		if a.observer != nil {
-			a.observer(name, args)
-		}
-
-		observation := a.executeTool(ctx, name, args)
-		a.logger.Debug("tool result", zap.String("tool", name), zap.Int("bytes", len(observation)))
-		history = append(history, backend.Message{
-			Role:    backend.RoleUser,
-			Content: toolResultLine + ": " + observation,
-		})
+		history = append(history, a.runToolCall(ctx, name, args))
 	}
 
 	return RunResult{}, fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
+}
+
+// seedHistory returns a conversation ready for the user prompt: an
+// empty history grows the system message (base prompt plus tool
+// docs); an existing one is used as-is, so Step can continue a
+// session across calls.
+func (a *Agent) seedHistory(history []backend.Message) []backend.Message {
+	if len(history) == 0 {
+		return []backend.Message{
+			{Role: backend.RoleSystem, Content: a.system + a.toolDocs()},
+		}
+	}
+	return history
+}
+
+// chat performs one backend round trip and turns a failure into the
+// agent's turn-stamped error.
+func (a *Agent) chat(ctx context.Context, turn int, history []backend.Message) (backend.ChatResponse, error) {
+	resp, err := a.backend.Chat(ctx, backend.ChatRequest{
+		Model:    a.model,
+		Messages: history,
+	})
+	if err != nil {
+		a.logger.Warn("backend chat failed", zap.Int("turn", turn), zap.Error(err))
+		return backend.ChatResponse{}, fmt.Errorf("agent: turn %d: %w", turn, err)
+	}
+	return resp, nil
+}
+
+// runToolCall executes one requested tool call and returns the
+// observation message for the history: notify the observer, run the
+// tool (approval gate and error-to-observation live in executeTool),
+// and log the result size.
+func (a *Agent) runToolCall(ctx context.Context, name, args string) backend.Message {
+	a.logger.Info("tool call", zap.String("tool", name), zap.String("args", args))
+	if a.observer != nil {
+		a.observer(name, args)
+	}
+	observation := a.executeTool(ctx, name, args)
+	a.logger.Debug("tool result", zap.String("tool", name), zap.Int("bytes", len(observation)))
+	return backend.Message{
+		Role:    backend.RoleUser,
+		Content: toolResultLine + ": " + observation,
+	}
 }
 
 // executeTool runs one tool call and returns the observation to feed

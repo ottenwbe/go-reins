@@ -11,13 +11,14 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_BUILD = go build -ldflags "-X go-reins/cmd.version=$(VERSION)" -o $(BINARY) .
 
 .DEFAULT_GOAL := help
-.PHONY: help build test vet fmt fmt-check check sbom sbom-check licenses clean
+.PHONY: help build test vet fmt fmt-check check sbom-check licenses clean
 
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[1m%-10s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the go-reins binary into the working directory
+build: ## Build the binary with a freshly generated SBOM embedded
+	go run . gen-sbom > internal/licenses/sbom.json
 	$(GO_BUILD)
 
 test: ## Run the full test suite
@@ -33,14 +34,10 @@ fmt-check: ## Fail when any file is not gofmt-clean
 	@out=$$(gofmt -l $(PKG_DIRS)); \
 	if [ -n "$$out" ]; then echo "not gofmt-clean:"; echo "$$out"; exit 1; fi
 
-sbom: build ## Regenerate the embedded CycloneDX SBOM and re-bake it
-	./$(BINARY) gen-sbom > internal/licenses/sbom.json
-	$(GO_BUILD)
-
-sbom-check: build ## Fail when the committed SBOM is stale
-	@tmp=$$(mktemp); ./$(BINARY) gen-sbom > $$tmp; \
+sbom-check: ## Fail when the committed SBOM is stale
+	@tmp=$$(mktemp); go run . gen-sbom > $$tmp; \
 	if ! diff -q $$tmp internal/licenses/sbom.json >/dev/null; then \
-		echo "internal/licenses/sbom.json is stale; run make sbom"; rm -f $$tmp; exit 1; \
+		echo "internal/licenses/sbom.json is stale; run make build"; rm -f $$tmp; exit 1; \
 	fi; rm -f $$tmp
 
 check: fmt-check vet test sbom-check ## Everything CI runs, locally

@@ -9,7 +9,7 @@ import (
 )
 
 // genSbomCmd emits the CycloneDX SBOM of the running binary. It is
-// the build-time half of the licenses story: `make sbom` runs it and
+// the build-time half of the licenses story: `make build` runs it and
 // bakes the output into the binary, where the licenses command reads
 // it back. Hidden because it is a build tool, not user interface.
 var genSbomCmd = &cobra.Command{

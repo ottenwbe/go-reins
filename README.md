@@ -236,7 +236,7 @@ against:
 The data comes from a CycloneDX SBOM (`internal/licenses/sbom.json`)
 that is generated at build time from the module cache and baked into
 the binary via `go:embed` — so the command needs no Go toolchain on
-the machine it runs on. `make sbom` regenerates it; `make check`
+the machine it runs on. `make build` regenerates it; `make check`
 fails when the committed SBOM is stale.
 
 > **Experimental.** The licenses command and the SBOM machinery are
@@ -261,12 +261,14 @@ make build VERSION=1.0.0
 | Flag | Env | Default | Description |
 | --- | --- | --- | --- |
 | `--backend` | `GO_REINS_BACKEND` | `ollama` | `ollama` or `llamacpp` |
-| `--model` | `GO_REINS_MODEL` | — | model name, e.g. `llama3.2` |
+| `--model` | `GO_REINS_MODEL` | `gemma4` | model name, e.g. `gemma4` or `llama3.2` |
 | `--url` | `GO_REINS_URL` | per-backend default | backend base URL |
 | `--yes` | `GO_REINS_YES` | `false` | auto-approve tool calls (no confirmation prompt) |
 | `--history` | `GO_REINS_HISTORY` | `false` | print the full conversation after the answer |
 | `--turns` | `GO_REINS_TURNS` | `false` | print how many turns the run took |
 | `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
+| `--tools` | `GO_REINS_TOOLS` | all tools | comma-separated tools to load, e.g. `read,shell`; an empty list loads none |
+| `--tool-risk` | `GO_REINS_TOOL_RISK` | tool's own tier | per-tool risk override, e.g. `shell=read-only` (values: `read-only`, `mutating`) |
 | `--config` | — | `$HOME/.go-reins.yaml` | config file path |
 
 Configuration resolves as CLI flags > environment (`GO_REINS_*`) >
@@ -279,7 +281,16 @@ Config file example (`~/.go-reins.yaml`):
 backend: ollama
 model: llama3.2
 url: http://localhost:11434
+tools: [read, shell]
+tool-risk:
+  shell: read-only   # sandboxed shell: no approval prompt
 ```
+
+`tools` selects which tools the agent loads (missing = all). `tool-risk`
+overrides how the approval gate scores a tool — the operator, not the
+tool, decides whether a call needs confirmation. Unknown tool names
+and invalid risk values fail at startup instead of silently changing
+behavior.
 
 ## Tests
 
@@ -289,9 +300,10 @@ go test ./...
 
 Tests cover the agent loop (against a fake backend) and both adapters
 (against `httptest` mock servers), so no running backend is needed.
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
-`go vet`, `go build`, and `go test` on every push and pull request,
-using the Go version pinned in `go.mod`.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds all
+packages and runs `make check` (gofmt, vet, tests, SBOM freshness) on
+every push and pull request — the same gate as locally — using the Go
+version pinned in `go.mod`.
 
 ## Roadmap
 

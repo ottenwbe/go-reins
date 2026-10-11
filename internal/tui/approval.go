@@ -63,11 +63,21 @@ func (g *ApprovalGate) Approver() agent.Approver {
 // arrives (or the gate closes) and delivers it as a message. Keep one
 // Wait pending for as long as the agent is running.
 func (g *ApprovalGate) Wait() tea.Cmd {
+	return g.WaitOn(nil)
+}
+
+// WaitOn is Wait with a cancellation channel: closing done aborts
+// the wait and delivers nothing. It lets a caller scope a waiter to
+// one agent step and cancel it when the step ends, so stale waiters
+// cannot pile up.
+func (g *ApprovalGate) WaitOn(done <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case req := <-g.requests:
 			return req
 		case <-g.done:
+			return nil
+		case <-done:
 			return nil
 		}
 	}

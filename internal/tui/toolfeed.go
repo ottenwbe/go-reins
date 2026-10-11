@@ -47,11 +47,20 @@ func (f *ToolFeed) Observer() agent.ToolObserver {
 // (or the feed closes) and delivers it as a message. Keep one Wait
 // pending for as long as a step is running.
 func (f *ToolFeed) Wait() tea.Cmd {
+	return f.WaitOn(nil)
+}
+
+// WaitOn is Wait with a cancellation channel: closing done aborts
+// the wait and delivers nothing, so a waiter can be scoped to one
+// agent step and canceled when the step ends.
+func (f *ToolFeed) WaitOn(done <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case ev := <-f.events:
 			return ev
 		case <-f.done:
+			return nil
+		case <-done:
 			return nil
 		}
 	}

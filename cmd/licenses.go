@@ -15,7 +15,7 @@ var licensesCmd = &cobra.Command{
 	Short: "Print the open source licenses of the dependencies",
 	Long: `licenses lists every module go-reins links against with its
 version and SPDX license identifier. The data comes from a CycloneDX
-SBOM embedded in this binary at build time (make sbom regenerates
+SBOM embedded in this binary at build time (make build regenerates
 it), so the command needs no Go toolchain and no module cache on
 the machine it runs on.
 
