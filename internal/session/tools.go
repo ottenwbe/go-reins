@@ -31,14 +31,38 @@ var toolRegistry = map[string]func() agent.Tool{
 //     sandboxed shell can run without approval, a shared machine can
 //     gate even the read tool.
 //
-// Unknown tool names and unparseable risk values are errors: failing
-// at assembly is better than silently running a different tool set
-// than the operator asked for.
+// Unknown tool names, risk overrides that name a tool that is not
+// loaded, and unparseable risk values are errors: failing at
+// assembly is better than silently running a different tool set -
+// or a different risk policy - than the operator asked for.
 func Tools(cfg config.Config) ([]agent.Tool, error) {
 	names := cfg.Tools
 	if names == nil {
 		names = toolOrder
 	}
+
+	// A risk override for a tool that is not loaded is an error, not
+	// a silent no-op: the operator's policy must actually apply.
+	// Duplicate tool names error too - announcing a tool twice in
+	// the system prompt is a config mistake, not an intent.
+	selected := make(map[string]bool, len(names))
+	for _, name := range names {
+		if selected[name] {
+			return nil, fmt.Errorf("tool %q listed twice in tools", name)
+		}
+		selected[name] = true
+	}
+	for name := range cfg.ToolRisk {
+		if selected[name] {
+			continue
+		}
+		if _, ok := toolRegistry[name]; !ok {
+			return nil, fmt.Errorf("unknown tool %q in tool-risk, available: %s",
+				name, strings.Join(toolOrder, ", "))
+		}
+		return nil, fmt.Errorf("tool-risk overrides %q, but the tools list does not load it", name)
+	}
+
 	tools := make([]agent.Tool, 0, len(names))
 	for _, name := range names {
 		build, ok := toolRegistry[name]

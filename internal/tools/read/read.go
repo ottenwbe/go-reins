@@ -6,10 +6,12 @@
 package read
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +29,16 @@ const (
 	// maxOutput caps the observation so one huge file cannot blow up
 	// the conversation history — the same budget as the shell tool.
 	maxOutput = 4000
+	// maxLineLen caps a single line inside the observation: without
+	// it, one multi-megabyte line would sail past the byte budget
+	// before the budget check sees it.
+	maxLineLen = 512
 )
+
+// truncNote is appended when a cap was hit; the byte budget
+// reserves space for it so even a truncated observation stays
+// within maxOutput.
+const truncNote = "(output truncated — narrow the window with offset and limit)\n"
 
 // Read returns file contents as a numbered observation.
 type Read struct{}
@@ -86,11 +97,11 @@ func (r *Read) Execute(ctx context.Context, args string) (string, error) {
 	if call.Offset < 1 {
 		call.Offset = 1
 	}
-	lines, err := readLines(path, call.Offset, call.Limit)
+	lines, truncated, err := readWindow(ctx, path, call.Offset, call.Limit)
 	if err != nil {
 		return "", err
 	}
-	return render(lines, call.Offset), nil
+	return render(lines, call.Offset, truncated), nil
 }
 
 // resolveInWorkdir turns a relative path into an absolute one and
@@ -120,17 +131,25 @@ func resolveInWorkdir(path string) (string, error) {
 	return real, nil
 }
 
-// readLines loads the file and returns the requested window. The
-// offset is 1-based; zero or negative means 1. The limit defaults to
-// defaultLimit and is capped at maxLimit.
-func readLines(path string, offset, limit int) ([]string, error) {
-	data, err := os.ReadFile(path)
+// readWindow streams the file and returns the requested window of
+// lines - the file is never loaded whole, and no line is ever held
+// beyond maxLineLen bytes, so neither a huge file nor a huge line
+// costs memory. The offset is 1-based; zero or negative means 1.
+// The limit defaults to defaultLimit and is capped at maxLimit.
+//
+// The byte budget counts what render will actually emit - the
+// "%5d|" prefix, the content, the ellipsis, the newline - and
+// reserves space for the truncation note, so the final observation
+// fits maxOutput no matter how many short lines the window holds.
+// truncated reports that either cap hit. Scanning honors ctx, so
+// cancellation during a long skip or a huge line is prompt. Binary
+// detection sees only the requested window, not the whole file.
+func readWindow(ctx context.Context, path string, offset, limit int) (lines []string, truncated bool, err error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, false, fmt.Errorf("read file: %w", err)
 	}
-	if strings.ContainsRune(string(data), 0x00) {
-		return nil, errors.New("binary file, refusing to read")
-	}
+	defer f.Close()
 
 	if offset < 1 {
 		offset = 1
@@ -142,34 +161,111 @@ func readLines(path string, offset, limit int) ([]string, error) {
 		limit = maxLimit
 	}
 
-	all := strings.Split(string(data), "\n")
-	// A trailing newline must not surface as a phantom empty line.
-	if len(all) > 1 && all[len(all)-1] == "" && strings.HasSuffix(string(data), "\n") {
-		all = all[:len(all)-1]
+	cancelled := func(err error) bool {
+		return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 	}
-	if offset > len(all) {
-		return nil, fmt.Errorf("offset %d is past the end of the file (%d lines)", offset, len(all))
+
+	r := bufio.NewReaderSize(f, 64*1024)
+	// Skipping drains without retaining anything (limit 0).
+	for i := 1; i < offset; i++ {
+		if _, _, err := readCappedLine(ctx, r, 0); err != nil {
+			if cancelled(err) {
+				return nil, false, fmt.Errorf("read: %w", err)
+			}
+			return nil, false, fmt.Errorf("offset %d is beyond the end of the file", offset)
+		}
 	}
-	end := offset - 1 + limit
-	if end > len(all) {
-		end = len(all)
+
+	budget := maxOutput - len(truncNote)
+	total := 0
+	for len(lines) < limit {
+		line, tooLong, rerr := readCappedLine(ctx, r, maxLineLen)
+		if cancelled(rerr) {
+			return nil, false, fmt.Errorf("read: %w", rerr)
+		}
+		// EOF before the window produced anything: an empty file
+		// is an empty file, but with lines skipped it means the
+		// offset points past the last line.
+		if rerr == io.EOF && line == "" {
+			if len(lines) == 0 && offset > 1 {
+				return nil, false, fmt.Errorf("offset %d is beyond the end of the file", offset)
+			}
+			break
+		}
+		if rerr != nil && rerr != io.EOF {
+			return nil, false, fmt.Errorf("read file: %w", rerr)
+		}
+		if strings.ContainsRune(line, 0x00) {
+			return nil, false, errors.New("binary file, refusing to read")
+		}
+		if tooLong {
+			line += "…"
+			truncated = true
+		}
+		rendered := fmt.Sprintf("%5d|%s\n", offset+len(lines), line)
+		if total+len(rendered) > budget {
+			truncated = true
+			break
+		}
+		lines = append(lines, line)
+		total += len(rendered)
 	}
-	return all[offset-1 : end], nil
+	return lines, truncated, nil
 }
 
-// render numbers the lines and caps the total size, noting the cut
-// so the model knows to read on.
-func render(lines []string, offset int) string {
+// readCappedLine reads one line, retaining at most the first limit
+// bytes of it: ReadString would buffer a multi-megabyte line whole
+// before the caller could truncate it, so this drains through the
+// newline and drops everything past the cap. One extra byte is
+// retained beyond the cap so a line of exactly limit bytes keeps
+// its newline slot and is not falsely marked truncated; the newline
+// is trimmed before the line is returned. tooLong reports that
+// bytes were dropped. A limit of 0 drains the line and returns
+// nothing. The drain honors ctx, so even one gigantic line cannot
+// outlast a cancelled run.
+func readCappedLine(ctx context.Context, r *bufio.Reader, limit int) (line string, tooLong bool, err error) {
+	keep := limit + 1 // room for the newline
+	var kept []byte
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
+		chunk, rerr := r.ReadSlice('\n')
+		if room := keep - len(kept); len(chunk) <= room {
+			kept = append(kept, chunk...)
+		} else {
+			kept = append(kept, chunk[:max(room, 0)]...)
+			tooLong = true
+		}
+		if rerr == bufio.ErrBufferFull {
+			continue // no newline yet: drain on, retained part stays capped
+		}
+		line := strings.TrimSuffix(string(kept), "\n")
+		// The newline slot is reserved, so a terminated line of
+		// exactly limit bytes fits whole. An unterminated one
+		// (EOF) can arrive with the slot filled by content instead
+		// - cut it here rather than trusting the caller.
+		if len(line) > limit {
+			line = line[:limit]
+			tooLong = true
+		}
+		return line, tooLong, rerr
+	}
+}
+
+// render numbers the lines of the window; readWindow has already
+// capped the content. An empty window over a real file is an empty
+// file, not an error.
+func render(lines []string, offset int, truncated bool) string {
+	if len(lines) == 0 && !truncated {
+		return "(empty file)"
+	}
 	var sb strings.Builder
 	for i, line := range lines {
 		fmt.Fprintf(&sb, "%5d|%s\n", offset+i, line)
-		if sb.Len() >= maxOutput {
-			sb.WriteString("(output truncated — narrow the window with offset and limit)\n")
-			break
-		}
 	}
-	if sb.Len() == 0 {
-		return "(empty file)"
+	if truncated {
+		sb.WriteString(truncNote)
 	}
 	return sb.String()
 }
