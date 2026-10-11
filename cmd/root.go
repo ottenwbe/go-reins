@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"go-reins/internal/agent"
 	"go-reins/internal/config"
 )
 
@@ -52,4 +53,5 @@ func init() {
 	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
 	flags.String("tools", "", "comma-separated tools to load, e.g. read,shell (default: all)")
 	flags.String("tool-risk", "", "per-tool risk override, e.g. shell=read-only (values: read-only, mutating)")
+	flags.Int("max-turns", agent.DefaultMaxTurns, "maximum backend round trips per run before the agent gives up")
 }

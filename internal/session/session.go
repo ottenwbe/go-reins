@@ -50,7 +50,7 @@ func NewAgent(cfg config.Config, approve agent.Approver, opts ...agent.Option) (
 		return nil, err
 	}
 
-	opts = append(opts, agent.WithLogger(logger))
+	opts = append(opts, agent.WithLogger(logger), agent.WithMaxTurns(cfg.MaxTurns))
 	if approve != nil {
 		opts = append(opts, agent.WithApprover(approve))
 	}

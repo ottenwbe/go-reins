@@ -57,7 +57,8 @@ go-reins/
   Errors carry the server's own message (`{"error":"..."}` for
   ollama, the OpenAI shape for llama.cpp), not just a status code.
 - **`internal/agent`** runs a reason → act → observe loop with a
-  turn cap (`WithMaxTurns`, default 8). Tool calling is a text
+  turn cap (`WithMaxTurns`; the operator sets it via `--max-turns`,
+  default 8). Tool calling is a text
   protocol owned by the agent: tools are announced in the system
   prompt, the model requests one with a `TOOLCALL <name> <json>`
   line, and the observation returns as a `TOOLRESULT` user message.

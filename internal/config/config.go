@@ -30,6 +30,7 @@ type Config struct {
 	History  bool   // dump the conversation after the answer
 	Turns    bool   // report how many turns the run took
 	LogLevel string // zap level: debug, info, warn, error
+	MaxTurns int    // turn budget per Run/Step; at least 1
 
 	// Tools selects which agent tools load, by name. Nil means all
 	// available tools; an explicitly empty list loads none.
@@ -51,6 +52,7 @@ func Defaults() Config {
 		Backend:  "ollama",
 		Model:    "gemma4",
 		LogLevel: "error",
+		MaxTurns: agent.DefaultMaxTurns,
 	}
 }
 
@@ -93,6 +95,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("tool %q: %w", tool, err)
 		}
 	}
+	if c.MaxTurns < 1 {
+		return fmt.Errorf("invalid max-turns %d: must be at least 1", c.MaxTurns)
+	}
 	return nil
 }
 
@@ -111,6 +116,7 @@ type fileConfig struct {
 	History  bool              `yaml:"history"`
 	Turns    bool              `yaml:"turns"`
 	LogLevel string            `yaml:"log-level"`
+	MaxTurns *int              `yaml:"max-turns"`
 	Tools    []string          `yaml:"tools"`
 	ToolRisk map[string]string `yaml:"tool-risk"`
 }
@@ -163,6 +169,12 @@ func readInto(c *Config, path string) error {
 	if fc.LogLevel != "" {
 		c.LogLevel = fc.LogLevel
 	}
+	// A pointer keeps an explicit "max-turns: 0" distinct from an
+	// absent key: zero must fail validation, not silently fall back
+	// to the default.
+	if fc.MaxTurns != nil {
+		c.MaxTurns = *fc.MaxTurns
+	}
 	// Booleans have no "unset" distinct from false, so a file entry
 	// is taken as an explicit choice.
 	c.Yes = fc.Yes
@@ -204,6 +216,13 @@ func applyEnv(c *Config) error {
 	}
 	if v := str("log-level"); v != "" {
 		c.LogLevel = v
+	}
+	if v := str("max-turns"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("env %s: %w", envKey("max-turns"), err)
+		}
+		c.MaxTurns = n
 	}
 	boolean := func(key string, target *bool) error {
 		v := str(key)
@@ -281,6 +300,15 @@ func applyFlags(c *Config, flags *flag.FlagSet) error {
 	}
 	if fl := flags.Lookup("log-level"); fl != nil && fl.Changed {
 		c.LogLevel = fl.Value.String()
+	}
+	// Ints: pflag already rejects non-numeric values at parse time;
+	// parsing here is defense in depth, same as the bool flags.
+	if fl := flags.Lookup("max-turns"); fl != nil && fl.Changed {
+		n, err := strconv.Atoi(fl.Value.String())
+		if err != nil {
+			return fmt.Errorf("flag --max-turns: %w", err)
+		}
+		c.MaxTurns = n
 	}
 	// Bools: pflag already rejects invalid values at parse time, so
 	// these errors are defense in depth - but they propagate anyway,

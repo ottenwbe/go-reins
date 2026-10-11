@@ -14,7 +14,10 @@ import (
 	"go-reins/internal/backend"
 )
 
-const defaultMaxTurns = 8
+// DefaultMaxTurns is the turn budget used when the operator does not
+// set one. Config and the CLI flag take their default from here, so
+// the shipped default cannot drift apart.
+const DefaultMaxTurns = 8
 
 // Tool-call convention of the text protocol. The agent injects these
 // rules into the system prompt; the model requests a tool by emitting
@@ -149,7 +152,7 @@ func New(b backend.Backend, model, system string, tools []Tool, opts ...Option) 
 		tools:    tools,
 		byName:   make(map[string]Tool, len(tools)),
 		logger:   zap.NewNop(),
-		maxTurns: defaultMaxTurns,
+		maxTurns: DefaultMaxTurns,
 	}
 	for _, t := range tools {
 		a.byName[t.Name()] = t

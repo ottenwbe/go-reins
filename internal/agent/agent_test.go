@@ -376,8 +376,8 @@ func TestRunLogsDeniedCall(t *testing.T) {
 func TestMaxTurnsConfiguration(t *testing.T) {
 	fb := &fakeBackend{reply: backend.ChatResponse{Content: "hello there"}}
 
-	if got := New(fb, "test-model", "be brief", nil).maxTurns; got != defaultMaxTurns {
-		t.Errorf("default maxTurns = %d, want %d", got, defaultMaxTurns)
+	if got := New(fb, "test-model", "be brief", nil).maxTurns; got != DefaultMaxTurns {
+		t.Errorf("default maxTurns = %d, want %d", got, DefaultMaxTurns)
 	}
 
 	a := New(fb, "test-model", "be brief", nil, WithMaxTurns(3))
@@ -386,8 +386,8 @@ func TestMaxTurnsConfiguration(t *testing.T) {
 	}
 
 	ignored := New(fb, "test-model", "be brief", nil, WithMaxTurns(0))
-	if ignored.maxTurns != defaultMaxTurns {
-		t.Errorf("maxTurns = %d after invalid option, want %d", ignored.maxTurns, defaultMaxTurns)
+	if ignored.maxTurns != DefaultMaxTurns {
+		t.Errorf("maxTurns = %d after invalid option, want %d", ignored.maxTurns, DefaultMaxTurns)
 	}
 }
 
