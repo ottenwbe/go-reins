@@ -24,13 +24,13 @@
     {
       "type": "library",
       "name": "charm.land/bubbletea/v2",
-      "version": "v2.0.10",
+      "version": "v2.1.0",
       "licenses": [
         {
           "expression": "MIT"
         }
       ],
-      "purl": "pkg:golang/charm.land/bubbletea/v2@v2.0.10"
+      "purl": "pkg:golang/charm.land/bubbletea/v2@v2.1.0"
     },
     {
       "type": "library",
@@ -79,24 +79,24 @@
     {
       "type": "library",
       "name": "github.com/charmbracelet/ultraviolet",
-      "version": "v0.0.0-20260811164956-006e29f97886",
+      "version": "v0.0.0-20261008173134-6b8d4baf91b4",
       "licenses": [
         {
           "expression": "MIT"
         }
       ],
-      "purl": "pkg:golang/github.com/charmbracelet/ultraviolet@v0.0.0-20260811164956-006e29f97886"
+      "purl": "pkg:golang/github.com/charmbracelet/ultraviolet@v0.0.0-20261008173134-6b8d4baf91b4"
     },
     {
       "type": "library",
       "name": "github.com/charmbracelet/x/ansi",
-      "version": "v0.11.8",
+      "version": "v0.11.9",
       "licenses": [
         {
           "expression": "MIT"
         }
       ],
-      "purl": "pkg:golang/github.com/charmbracelet/x/ansi@v0.11.8"
+      "purl": "pkg:golang/github.com/charmbracelet/x/ansi@v0.11.9"
     },
     {
       "type": "library",
@@ -167,13 +167,13 @@
     {
       "type": "library",
       "name": "github.com/mattn/go-runewidth",
-      "version": "v0.0.30",
+      "version": "v0.0.31",
       "licenses": [
         {
           "expression": "MIT"
         }
       ],
-      "purl": "pkg:golang/github.com/mattn/go-runewidth@v0.0.30"
+      "purl": "pkg:golang/github.com/mattn/go-runewidth@v0.0.31"
     },
     {
       "type": "library",
@@ -266,35 +266,35 @@
     {
       "type": "library",
       "name": "golang.org/x/sync",
-      "version": "v0.23.0",
+      "version": "v0.24.0",
       "licenses": [
         {
           "expression": "BSD-3-Clause"
         }
       ],
-      "purl": "pkg:golang/golang.org/x/sync@v0.23.0"
+      "purl": "pkg:golang/golang.org/x/sync@v0.24.0"
     },
     {
       "type": "library",
       "name": "golang.org/x/sys",
-      "version": "v0.48.0",
+      "version": "v0.49.0",
       "licenses": [
         {
           "expression": "BSD-3-Clause"
         }
       ],
-      "purl": "pkg:golang/golang.org/x/sys@v0.48.0"
+      "purl": "pkg:golang/golang.org/x/sys@v0.49.0"
     },
     {
       "type": "library",
       "name": "golang.org/x/term",
-      "version": "v0.46.0",
+      "version": "v0.47.0",
       "licenses": [
         {
           "expression": "BSD-3-Clause"
         }
       ],
-      "purl": "pkg:golang/golang.org/x/term@v0.46.0"
+      "purl": "pkg:golang/golang.org/x/term@v0.47.0"
     }
   ]
 }
