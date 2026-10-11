@@ -7,6 +7,12 @@
 // cache.go, classify.go) and is deliberately hand-rolled to keep
 // the dependency tree small - the same reason config does not use
 // viper.
+//
+// The package is experimental: it exists as much to learn what Go
+// and a CLI tool can do (embed, build info, the module cache's
+// on-disk conventions, the CycloneDX schema, make-time generation)
+// as to produce output. Expect rough edges, and do not treat its
+// license reports as authoritative for compliance decisions.
 package licenses
 
 import (

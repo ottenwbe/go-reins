@@ -17,7 +17,12 @@ var licensesCmd = &cobra.Command{
 version and SPDX license identifier. The data comes from a CycloneDX
 SBOM embedded in this binary at build time (make sbom regenerates
 it), so the command needs no Go toolchain and no module cache on
-the machine it runs on.`,
+the machine it runs on.
+
+EXPERIMENTAL: this command and the SBOM machinery behind it are a
+learning ground for what Go and a CLI can do - go:embed, build
+info, the module cache, the CycloneDX schema. Do not rely on it for
+license compliance decisions.`,
 	Args: cobra.NoArgs,
 	RunE: printLicenses,
 }
