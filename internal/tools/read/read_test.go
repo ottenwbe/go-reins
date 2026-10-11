@@ -244,3 +244,71 @@ func TestReadEmptyFileStillReportsAsEmpty(t *testing.T) {
 		t.Errorf("empty file output = %q, want (empty file)", out)
 	}
 }
+
+// TestReadBudgetCountsRenderedBytes pins that the cap applies to the
+// observation as rendered - line-number prefixes and newlines
+// included - so a window of many short lines cannot exceed it.
+func TestReadBudgetCountsRenderedBytes(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "many.txt", strings.Repeat("\n", 1000))
+
+	out, err := call(t, `{"path":"many.txt","limit":1000}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(out) > maxOutput {
+		t.Errorf("rendered length = %d, want <= %d (prefixes must count)", len(out), maxOutput)
+	}
+	if !strings.Contains(out, "(output truncated") {
+		t.Error("window was cut but carries no truncation note")
+	}
+}
+
+// TestReadLineExactlyAtCapNotTruncated pins the newline off-by-one:
+// a line of exactly maxLineLen bytes fits without truncation, and
+// one byte more gets the ellipsis.
+func TestReadLineExactlyAtCapNotTruncated(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "exact.txt", strings.Repeat("x", maxLineLen)+"\n")
+
+	out, err := call(t, `{"path":"exact.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "…") || strings.Contains(out, "(output truncated") {
+		t.Error("line of exactly maxLineLen must not be truncated")
+	}
+
+	writeFile(t, dir, "over.txt", strings.Repeat("x", maxLineLen+1)+"\n")
+	out, err = call(t, `{"path":"over.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "…") {
+		t.Error("line over maxLineLen must carry the truncation marker")
+	}
+}
+
+// TestReadHonorsCancellation pins that a cancelled context aborts
+// the scan instead of grinding through a long skip.
+func TestReadHonorsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var lines []string
+	for i := 1; i <= 100000; i++ {
+		lines = append(lines, "line")
+	}
+	writeFile(t, dir, "big.txt", strings.Join(lines, "\n"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New().Execute(ctx, `{"path":"big.txt","offset":99999}`)
+	if err == nil {
+		t.Fatal("cancelled scan: want error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %v, want context canceled", err)
+	}
+}
