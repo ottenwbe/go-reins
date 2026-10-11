@@ -16,7 +16,7 @@ func newFlags(t *testing.T) *flag.FlagSet {
 	f := flag.NewFlagSet("go-reins", flag.ContinueOnError)
 	f.String("backend", "ollama", "")
 	f.String("url", "", "")
-	f.String("model", "", "")
+	f.String("model", "gemma4", "")
 	f.Bool("yes", false, "")
 	f.Bool("history", false, "")
 	f.Bool("turns", false, "")
@@ -213,5 +213,13 @@ func TestToolRiskEnvRejectsGarbage(t *testing.T) {
 	t.Setenv(EnvPrefix+"_TOOL_RISK", "nonsense")
 	if _, err := Load(newFlags(t)); err == nil {
 		t.Error("want error for unparseable risk env var")
+	}
+}
+
+// TestDefaultModel pins the out-of-the-box model: changing it is a
+// product decision, not an accident.
+func TestDefaultModel(t *testing.T) {
+	if got := Defaults().Model; got != "gemma4" {
+		t.Errorf("default model = %q, want gemma4", got)
 	}
 }

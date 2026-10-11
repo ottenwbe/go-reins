@@ -261,7 +261,7 @@ make build VERSION=1.0.0
 | Flag | Env | Default | Description |
 | --- | --- | --- | --- |
 | `--backend` | `GO_REINS_BACKEND` | `ollama` | `ollama` or `llamacpp` |
-| `--model` | `GO_REINS_MODEL` | — | model name, e.g. `llama3.2` |
+| `--model` | `GO_REINS_MODEL` | `gemma4` | model name, e.g. `gemma4` or `llama3.2` |
 | `--url` | `GO_REINS_URL` | per-backend default | backend base URL |
 | `--yes` | `GO_REINS_YES` | `false` | auto-approve tool calls (no confirmation prompt) |
 | `--history` | `GO_REINS_HISTORY` | `false` | print the full conversation after the answer |

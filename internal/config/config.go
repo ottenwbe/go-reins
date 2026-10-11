@@ -42,6 +42,7 @@ type Config struct {
 func Defaults() Config {
 	return Config{
 		Backend:  "ollama",
+		Model:    "gemma4",
 		LogLevel: "error",
 	}
 }

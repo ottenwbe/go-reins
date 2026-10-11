@@ -47,7 +47,7 @@ func init() {
 	flags.String("config", "", "config file (default is $HOME/.go-reins.yaml)")
 	flags.String("backend", "ollama", "inference backend: ollama or llamacpp")
 	flags.String("url", "", "backend base URL (defaults: ollama http://localhost:11434, llamacpp http://localhost:8080)")
-	flags.String("model", "", "model name, e.g. llama3.2 or qwen2.5")
+	flags.String("model", "gemma4", "model name, e.g. gemma4 or llama3.2")
 	flags.Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
 	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
 	flags.String("tools", "", "comma-separated tools to load, e.g. read,shell (default: all)")
