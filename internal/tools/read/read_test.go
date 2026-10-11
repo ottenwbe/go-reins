@@ -2,6 +2,7 @@ package read
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,5 +146,61 @@ func TestReadRiskIsReadOnly(t *testing.T) {
 	tool := New()
 	if tool.Risk() != agent.RiskReadOnly {
 		t.Errorf("Risk = %v, want read-only", tool.Risk())
+	}
+}
+
+// TestReadCapsSingleHugeLine pins the line-level cap: one
+// multi-megabyte line must not blow the output budget before the
+// budget check runs.
+func TestReadCapsSingleHugeLine(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	huge := strings.Repeat("x", 1024*1024)
+	writeFile(t, dir, "huge-line.txt", huge+"\n")
+
+	out, err := call(t, `{"path":"huge-line.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(out) > maxOutput+100 {
+		t.Errorf("output length = %d, want capped near %d", len(out), maxOutput)
+	}
+	if !strings.Contains(out, "(output truncated") {
+		t.Error("output missing truncation note")
+	}
+}
+
+// TestReadSkipsWithoutLoading pins the streaming path: a window far
+// into a large file returns quickly without holding the file in
+// memory (the important property is that skipped lines are never
+// buffered at all).
+func TestReadSkipsWithoutLoading(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var lines []string
+	for i := 1; i <= 5000; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	writeFile(t, dir, "big.txt", strings.Join(lines, "\n"))
+
+	out, err := call(t, `{"path":"big.txt","offset":4999,"limit":2}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "line 4999") || !strings.Contains(out, "line 5000") {
+		t.Errorf("window wrong:\n%s", out)
+	}
+	if strings.Contains(out, "line 1|") {
+		t.Error("window started at the beginning")
+	}
+}
+
+func TestReadOffsetBeyondEnd(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "small.txt", "one\ntwo\n")
+
+	if _, err := call(t, `{"path":"small.txt","offset":10}`); err == nil {
+		t.Error("offset past EOF: want error")
 	}
 }

@@ -6,10 +6,12 @@
 package read
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,10 @@ const (
 	// maxOutput caps the observation so one huge file cannot blow up
 	// the conversation history — the same budget as the shell tool.
 	maxOutput = 4000
+	// maxLineLen caps a single line inside the observation: without
+	// it, one multi-megabyte line would sail past the byte budget
+	// before the budget check sees it.
+	maxLineLen = 512
 )
 
 // Read returns file contents as a numbered observation.
@@ -86,11 +92,11 @@ func (r *Read) Execute(ctx context.Context, args string) (string, error) {
 	if call.Offset < 1 {
 		call.Offset = 1
 	}
-	lines, err := readLines(path, call.Offset, call.Limit)
+	lines, truncated, err := readWindow(path, call.Offset, call.Limit)
 	if err != nil {
 		return "", err
 	}
-	return render(lines, call.Offset), nil
+	return render(lines, call.Offset, truncated), nil
 }
 
 // resolveInWorkdir turns a relative path into an absolute one and
@@ -120,17 +126,20 @@ func resolveInWorkdir(path string) (string, error) {
 	return real, nil
 }
 
-// readLines loads the file and returns the requested window. The
-// offset is 1-based; zero or negative means 1. The limit defaults to
-// defaultLimit and is capped at maxLimit.
-func readLines(path string, offset, limit int) ([]string, error) {
-	data, err := os.ReadFile(path)
+// readWindow streams the file and returns the requested window of
+// lines - the file is never loaded whole, so a multi-gigabyte file
+// costs only the window's memory, and skipped lines are never held.
+// The offset is 1-based; zero or negative means 1. The limit
+// defaults to defaultLimit and is capped at maxLimit. Lines are
+// capped at maxLineLen and the window at maxOutput bytes in total;
+// truncated reports that either cap hit. Binary detection sees only
+// the requested window, not the whole file.
+func readWindow(path string, offset, limit int) (lines []string, truncated bool, err error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, false, fmt.Errorf("read file: %w", err)
 	}
-	if strings.ContainsRune(string(data), 0x00) {
-		return nil, errors.New("binary file, refusing to read")
-	}
+	defer f.Close()
 
 	if offset < 1 {
 		offset = 1
@@ -142,34 +151,53 @@ func readLines(path string, offset, limit int) ([]string, error) {
 		limit = maxLimit
 	}
 
-	all := strings.Split(string(data), "\n")
-	// A trailing newline must not surface as a phantom empty line.
-	if len(all) > 1 && all[len(all)-1] == "" && strings.HasSuffix(string(data), "\n") {
-		all = all[:len(all)-1]
+	r := bufio.NewReader(f)
+	for i := 1; i < offset; i++ {
+		if _, err := r.ReadString('\n'); err != nil {
+			return nil, false, fmt.Errorf("offset %d is beyond the end of the file", offset)
+		}
 	}
-	if offset > len(all) {
-		return nil, fmt.Errorf("offset %d is past the end of the file (%d lines)", offset, len(all))
+
+	total := 0
+	for len(lines) < limit {
+		line, err := r.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, false, fmt.Errorf("read file: %w", err)
+		}
+		if line == "" {
+			break // clean EOF
+		}
+		line = strings.TrimSuffix(line, "\n")
+		if strings.ContainsRune(line, 0x00) {
+			return nil, false, errors.New("binary file, refusing to read")
+		}
+		if len(line) > maxLineLen {
+			line = line[:maxLineLen] + "…"
+			truncated = true
+		}
+		if total+len(line) > maxOutput {
+			truncated = true
+			break
+		}
+		lines = append(lines, line)
+		total += len(line)
 	}
-	end := offset - 1 + limit
-	if end > len(all) {
-		end = len(all)
-	}
-	return all[offset-1 : end], nil
+	return lines, truncated, nil
 }
 
-// render numbers the lines and caps the total size, noting the cut
-// so the model knows to read on.
-func render(lines []string, offset int) string {
+// render numbers the lines of the window; readWindow has already
+// capped the content. An empty window over a real file is an empty
+// file, not an error.
+func render(lines []string, offset int, truncated bool) string {
+	if len(lines) == 0 && !truncated {
+		return "(empty file)"
+	}
 	var sb strings.Builder
 	for i, line := range lines {
 		fmt.Fprintf(&sb, "%5d|%s\n", offset+i, line)
-		if sb.Len() >= maxOutput {
-			sb.WriteString("(output truncated — narrow the window with offset and limit)\n")
-			break
-		}
 	}
-	if sb.Len() == 0 {
-		return "(empty file)"
+	if truncated {
+		sb.WriteString("(output truncated — narrow the window with offset and limit)\n")
 	}
 	return sb.String()
 }

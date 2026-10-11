@@ -132,3 +132,37 @@ func TestNewAgentRejectsUnknownTool(t *testing.T) {
 		t.Fatalf("NewAgent error = %v, want unknown tool", err)
 	}
 }
+
+// TestToolsRejectsRiskOverrideForUnloadedTool pins that a risk
+// override for a tool that is not loaded fails instead of silently
+// not applying - the operator's policy must actually take effect.
+func TestToolsRejectsRiskOverrideForUnloadedTool(t *testing.T) {
+	_, err := Tools(config.Config{
+		Tools:    []string{"read"},
+		ToolRisk: map[string]string{"shell": "read-only"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not load it") {
+		t.Fatalf("Tools error = %v, want override-for-unloaded-tool error", err)
+	}
+}
+
+func TestToolsRejectsRiskOverrideForUnknownTool(t *testing.T) {
+	_, err := Tools(config.Config{
+		ToolRisk: map[string]string{"shel": "read-only"}, // typo
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("Tools error = %v, want unknown-tool error", err)
+	}
+}
+
+func TestToolsAcceptsOverrideForLoadedTool(t *testing.T) {
+	tools, err := Tools(config.Config{
+		ToolRisk: map[string]string{"shell": "read-only"},
+	})
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if tools[1].Risk() != agent.RiskReadOnly {
+		t.Errorf("shell risk = %v, want read-only (loaded, so the override applies)", tools[1].Risk())
+	}
+}

@@ -5,11 +5,13 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"time"
 
 	"go-reins/internal/agent"
@@ -66,32 +68,66 @@ func (s *Shell) Execute(ctx context.Context, args string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
+	// Cap while reading, not after: CombinedOutput would buffer a
+	// noisy command's whole output in memory for the timeout window.
+	out := &cappedWriter{limit: maxOutput}
 	cmd := exec.CommandContext(ctx, "sh", "-c", call.Command)
-	out, err := cmd.CombinedOutput()
-	observation := string(out)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	err := cmd.Run()
+	observation := out.String()
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return truncate(observation), fmt.Errorf("command timed out after %s", s.timeout)
+		return observation, fmt.Errorf("command timed out after %s", s.timeout)
 	}
 	if err != nil {
 		// Non-zero exit: report output and status as the observation
 		// so the model can react, not as a hard failure.
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return truncate(fmt.Sprintf("%s\n(exit status %d)", observation, exitErr.ExitCode())), nil
+			return fmt.Sprintf("%s\n(exit status %d)", observation, exitErr.ExitCode()), nil
 		}
 		return "", fmt.Errorf("run command: %w", err)
 	}
 	if len(observation) == 0 {
 		return "(no output)", nil
 	}
-	return truncate(observation), nil
+	return observation, nil
 }
 
-// truncate caps the observation length and notes the cut.
-func truncate(s string) string {
-	if len(s) <= maxOutput {
-		return s
+// cappedWriter accumulates output up to limit bytes, then keeps
+// draining but discarding: the child process must never block on a
+// full pipe, but its noise must not eat memory either. exec calls
+// Write from copier goroutines for stdout and stderr, hence the
+// mutex.
+type cappedWriter struct {
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	room := w.limit - w.buf.Len()
+	if room > 0 {
+		if len(p) <= room {
+			w.buf.Write(p)
+			return len(p), nil
+		}
+		w.buf.Write(p[:room])
 	}
-	return s[:maxOutput] + "\n(output truncated)"
+	w.truncated = true
+	return len(p), nil
+}
+
+// String returns the capped output plus the truncation note, in the
+// same shape the old post-hoc truncation produced.
+func (w *cappedWriter) String() string {
+	s := w.buf.String()
+	if w.truncated {
+		return s + "\n(output truncated)"
+	}
+	return s
 }

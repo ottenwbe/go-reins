@@ -67,3 +67,21 @@ func TestExecuteTruncatesOutput(t *testing.T) {
 		t.Errorf("output missing truncation note, tail: %q", got[len(got)-40:])
 	}
 }
+
+// TestShellMemoryCappedOutput pins the streaming cap: a command that
+// produces far more output than the budget must not exceed it, and
+// the note must say so. (CombinedOutput would have buffered the
+// whole thing in memory first.)
+func TestShellMemoryCappedOutput(t *testing.T) {
+	out, err := New().Execute(context.Background(),
+		`{"command":"yes hello | head -c 300000"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(out) > maxOutput+len("\n(output truncated)") {
+		t.Errorf("output length = %d, want capped at %d + note", len(out), maxOutput)
+	}
+	if !strings.Contains(out, "(output truncated)") {
+		t.Error("output missing truncation note")
+	}
+}
