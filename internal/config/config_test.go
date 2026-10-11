@@ -223,3 +223,65 @@ func TestDefaultModel(t *testing.T) {
 		t.Errorf("default model = %q, want gemma4", got)
 	}
 }
+
+// TestValidate pins what the config package itself owns: log level
+// and tool-risk vocabulary. Backend and model names stay with
+// session, so adding a backend never widens this test.
+func TestValidate(t *testing.T) {
+	if err := Defaults().Validate(); err != nil {
+		t.Errorf("defaults must validate: %v", err)
+	}
+
+	bad := map[string]Config{
+		"log level":    {LogLevel: "chatty"},
+		"tool risk":    {ToolRisk: map[string]string{"shell": "spicy"}},
+		"risk per env": {LogLevel: "info", ToolRisk: map[string]string{"read": "mutating", "shell": "nope"}},
+	}
+	for name, cfg := range bad {
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate(%s) = nil, want error", name)
+		}
+	}
+}
+
+func TestLoadValidatesLogLevel(t *testing.T) {
+	isolate(t)
+	t.Setenv(EnvPrefix+"_LOG_LEVEL", "loud")
+	if _, err := Load(newFlags(t)); err == nil {
+		t.Error("want load error for invalid log level from env")
+	}
+}
+
+func TestParseKeyValuesRejectsEmptySides(t *testing.T) {
+	// Shape violations fail here. Content violations ("shell=="
+	// yields the value "=", which is not a risk tier) are Validate's
+	// job, not the parser's.
+	for _, in := range []string{"=mutating", "shell="} {
+		if _, err := parseKeyValues(in); err == nil {
+			t.Errorf("parseKeyValues(%q) = nil error, want rejection", in)
+		}
+	}
+	if m, err := parseKeyValues("shell=="); err != nil || m["shell"] != "=" {
+		t.Errorf("parseKeyValues(shell==) = %v, %v; want value %q to pass through for validation", m, err, "=")
+	}
+}
+
+func TestConfigFileRecordedNotPrinted(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "conf.yaml")
+	if err := os.WriteFile(path, []byte("model: llama3.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flags := newFlags(t)
+	if err := flags.Parse([]string{"--config", path}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(flags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ConfigFile != path {
+		t.Errorf("ConfigFile = %q, want %q", c.ConfigFile, path)
+	}
+}

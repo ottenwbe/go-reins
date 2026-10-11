@@ -13,6 +13,8 @@ import (
 
 	flag "github.com/spf13/pflag"
 	"go.yaml.in/yaml/v3"
+
+	"go-reins/internal/agent"
 )
 
 // EnvPrefix is prepended to every config key to form its environment
@@ -36,6 +38,11 @@ type Config struct {
 	// "read-only" or "mutating". Keys for unknown tools are an error
 	// at assembly time.
 	ToolRisk map[string]string
+
+	// ConfigFile is the path of the YAML file that was applied,
+	// empty when none was. The loader records it instead of
+	// printing, so the CLI layer decides what to do with the fact.
+	ConfigFile string
 }
 
 // Defaults returns the configuration used when nothing else is set.
@@ -47,11 +54,11 @@ func Defaults() Config {
 	}
 }
 
-// Load resolves the configuration. The flag set supplies both the
-// built-in defaults (registered at flag definition time) and the
-// highest-priority overrides; a flag only wins when it was explicitly
-// set (Flag.Changed), so a file or env value can supply what the user
-// left at its default.
+// Load resolves the configuration and validates the result. The
+// flag set supplies both the built-in defaults (registered at flag
+// definition time) and the highest-priority overrides; a flag only
+// wins when it was explicitly set (Flag.Changed), so a file or env
+// value can supply what the user left at its default.
 func Load(flags *flag.FlagSet) (Config, error) {
 	c := Defaults()
 
@@ -64,7 +71,35 @@ func Load(flags *flag.FlagSet) (Config, error) {
 	if err := applyFlags(&c, flags); err != nil {
 		return c, err
 	}
+	if err := c.Validate(); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// Validate reports whether the resolved configuration is internally
+// consistent, so a malformed value fails at load time instead of
+// deep inside a running command. It deliberately covers only what
+// this package owns: backend and model vocabulary stay with session
+// and the adapters, so adding a backend never touches this file.
+func (c Config) Validate() error {
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("invalid log level %q: expected debug, info, warn, or error", c.LogLevel)
+	}
+	for tool, risk := range c.ToolRisk {
+		if _, err := agent.ParseRisk(risk); err != nil {
+			return fmt.Errorf("tool %q: %w", tool, err)
+		}
+	}
+	return nil
+}
+
+// envKey maps a config key to its environment variable name, e.g.
+// log-level -> GO_REINS_LOG_LEVEL. One rule, one place.
+func envKey(key string) string {
+	return EnvPrefix + "_" + strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
 }
 
 // fileConfig mirrors the YAML config file schema.
@@ -142,7 +177,9 @@ func readInto(c *Config, path string) error {
 		c.ToolRisk = fc.ToolRisk
 	}
 
-	fmt.Fprintln(os.Stderr, "using config file:", path)
+	// Record, don't print: the CLI layer decides what a used config
+	// file is worth telling the user.
+	c.ConfigFile = path
 	return nil
 }
 
@@ -150,7 +187,7 @@ func readInto(c *Config, path string) error {
 // variables are ignored; boolean variables must parse.
 func applyEnv(c *Config) error {
 	str := func(key string) string {
-		if v, ok := os.LookupEnv(EnvPrefix + "_" + strings.ToUpper(strings.ReplaceAll(key, "-", "_"))); ok {
+		if v, ok := os.LookupEnv(envKey(key)); ok {
 			return v
 		}
 		return ""
@@ -175,7 +212,7 @@ func applyEnv(c *Config) error {
 		}
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("env %s_%s: %w", EnvPrefix, strings.ToUpper(key), err)
+			return fmt.Errorf("env %s: %w", envKey(key), err)
 		}
 		*target = b
 		return nil
@@ -195,7 +232,7 @@ func applyEnv(c *Config) error {
 	if v := str("tool-risk"); v != "" {
 		risk, err := parseKeyValues(v)
 		if err != nil {
-			return fmt.Errorf("env %s_TOOL_RISK: %w", EnvPrefix, err)
+			return fmt.Errorf("env %s: %w", envKey("tool-risk"), err)
 		}
 		c.ToolRisk = risk
 	}
@@ -215,14 +252,18 @@ func splitList(s string) []string {
 }
 
 // parseKeyValues turns "shell=read-only,read=mutating" into a map.
+// Both sides of each pair must be non-empty - a bare key, a bare
+// value, or junk like "=x" fails loudly instead of quietly becoming
+// a map entry.
 func parseKeyValues(s string) (map[string]string, error) {
 	out := make(map[string]string)
 	for _, pair := range splitList(s) {
 		k, v, ok := strings.Cut(pair, "=")
-		if !ok {
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if !ok || k == "" || v == "" {
 			return nil, fmt.Errorf("expected name=value, got %q", pair)
 		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		out[k] = v
 	}
 	return out, nil
 }
@@ -241,14 +282,30 @@ func applyFlags(c *Config, flags *flag.FlagSet) error {
 	if fl := flags.Lookup("log-level"); fl != nil && fl.Changed {
 		c.LogLevel = fl.Value.String()
 	}
-	if fl := flags.Lookup("yes"); fl != nil && fl.Changed {
-		c.Yes, _ = strconv.ParseBool(fl.Value.String())
+	// Bools: pflag already rejects invalid values at parse time, so
+	// these errors are defense in depth - but they propagate anyway,
+	// because silently coercing a parse failure to false is worse
+	// than failing.
+	boolFlag := func(name string, target *bool) error {
+		fl := flags.Lookup(name)
+		if fl == nil || !fl.Changed {
+			return nil
+		}
+		b, err := strconv.ParseBool(fl.Value.String())
+		if err != nil {
+			return fmt.Errorf("flag --%s: %w", name, err)
+		}
+		*target = b
+		return nil
 	}
-	if fl := flags.Lookup("history"); fl != nil && fl.Changed {
-		c.History, _ = strconv.ParseBool(fl.Value.String())
-	}
-	if fl := flags.Lookup("turns"); fl != nil && fl.Changed {
-		c.Turns, _ = strconv.ParseBool(fl.Value.String())
+	for name, target := range map[string]*bool{
+		"yes":     &c.Yes,
+		"history": &c.History,
+		"turns":   &c.Turns,
+	} {
+		if err := boolFlag(name, target); err != nil {
+			return err
+		}
 	}
 	if fl := flags.Lookup("tools"); fl != nil && fl.Changed {
 		c.Tools = splitList(fl.Value.String())
