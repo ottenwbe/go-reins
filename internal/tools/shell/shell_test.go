@@ -85,3 +85,19 @@ func TestShellMemoryCappedOutput(t *testing.T) {
 		t.Error("output missing truncation note")
 	}
 }
+
+// TestShellReportsCancellation pins that a command killed by parent
+// cancellation is an error, not an "(exit status -1)" observation
+// the model would read as a failed program.
+func TestShellReportsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(30*time.Millisecond, cancel)
+
+	_, err := New().Execute(ctx, `{"command":"sleep 5"}`)
+	if err == nil {
+		t.Fatal("cancelled command: want error")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("error = %v, want cancellation error", err)
+	}
+}

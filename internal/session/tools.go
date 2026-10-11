@@ -43,8 +43,13 @@ func Tools(cfg config.Config) ([]agent.Tool, error) {
 
 	// A risk override for a tool that is not loaded is an error, not
 	// a silent no-op: the operator's policy must actually apply.
+	// Duplicate tool names error too - announcing a tool twice in
+	// the system prompt is a config mistake, not an intent.
 	selected := make(map[string]bool, len(names))
 	for _, name := range names {
+		if selected[name] {
+			return nil, fmt.Errorf("tool %q listed twice in tools", name)
+		}
 		selected[name] = true
 	}
 	for name := range cfg.ToolRisk {

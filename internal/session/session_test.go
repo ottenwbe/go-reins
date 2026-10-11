@@ -166,3 +166,12 @@ func TestToolsAcceptsOverrideForLoadedTool(t *testing.T) {
 		t.Errorf("shell risk = %v, want read-only (loaded, so the override applies)", tools[1].Risk())
 	}
 }
+
+// TestToolsRejectsDuplicateNames pins that a tools list naming a
+// tool twice fails instead of announcing it twice.
+func TestToolsRejectsDuplicateNames(t *testing.T) {
+	_, err := Tools(config.Config{Tools: []string{"read", "read"}})
+	if err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Fatalf("Tools error = %v, want duplicate-name error", err)
+	}
+}

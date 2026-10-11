@@ -312,3 +312,29 @@ func TestReadHonorsCancellation(t *testing.T) {
 		t.Errorf("error = %v, want context canceled", err)
 	}
 }
+
+// TestReadUnterminatedLineAtCap pins the EOF half of the line-cap
+// boundary: without a trailing newline, the reserved newline slot
+// must not let content past the cap through.
+func TestReadUnterminatedLineAtCap(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "exact-eof.txt", strings.Repeat("x", maxLineLen))
+
+	out, err := call(t, `{"path":"exact-eof.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "…") {
+		t.Error("unterminated line of exactly maxLineLen must not be truncated")
+	}
+
+	writeFile(t, dir, "over-eof.txt", strings.Repeat("x", maxLineLen+1))
+	out, err = call(t, `{"path":"over-eof.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "…") {
+		t.Error("unterminated line over maxLineLen must carry the truncation marker")
+	}
+}

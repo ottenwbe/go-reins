@@ -240,7 +240,16 @@ func readCappedLine(ctx context.Context, r *bufio.Reader, limit int) (line strin
 		if rerr == bufio.ErrBufferFull {
 			continue // no newline yet: drain on, retained part stays capped
 		}
-		return strings.TrimSuffix(string(kept), "\n"), tooLong, rerr
+		line := strings.TrimSuffix(string(kept), "\n")
+		// The newline slot is reserved, so a terminated line of
+		// exactly limit bytes fits whole. An unterminated one
+		// (EOF) can arrive with the slot filled by content instead
+		// - cut it here rather than trusting the caller.
+		if len(line) > limit {
+			line = line[:limit]
+			tooLong = true
+		}
+		return line, tooLong, rerr
 	}
 }
 

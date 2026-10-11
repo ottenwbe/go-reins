@@ -77,8 +77,14 @@ func (s *Shell) Execute(ctx context.Context, args string) (string, error) {
 	err := cmd.Run()
 	observation := out.String()
 
-	if ctx.Err() == context.DeadlineExceeded {
+	// Cancellation first: exec reports a killed process as an
+	// ordinary non-zero exit, and a cancelled command must not be
+	// presented to the model as a failed program.
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
 		return observation, fmt.Errorf("command timed out after %s", s.timeout)
+	case context.Canceled:
+		return observation, fmt.Errorf("command cancelled: %w", ctx.Err())
 	}
 	if err != nil {
 		// Non-zero exit: report output and status as the observation
