@@ -66,16 +66,17 @@ func NewAgent(cfg config.Config, approve agent.Approver, opts ...agent.Option) (
 // newBackend builds the backend selected by cfg. It cannot live in
 // the backend package: the adapters import it for the Backend
 // interface, so a selector there would be an import cycle.
+// newBackend builds the backend selected by config. The model is
+// not wired here - it travels per request (backend.ChatRequest).
 func newBackend(cfg config.Config) (backend.Backend, error) {
-	bcfg := backend.Config{
-		BaseURL: cfg.URL,
-		Model:   cfg.Model,
-	}
+	bcfg := backend.Config{BaseURL: cfg.URL}
 	switch cfg.Backend {
 	case "ollama":
-		return ollama.New(bcfg), nil
+		b, err := ollama.New(bcfg)
+		return b, err
 	case "llamacpp":
-		return llamacpp.New(bcfg), nil
+		b, err := llamacpp.New(bcfg)
+		return b, err
 	default:
 		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", cfg.Backend)
 	}

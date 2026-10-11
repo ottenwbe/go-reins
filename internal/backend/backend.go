@@ -41,7 +41,8 @@ type Backend interface {
 }
 
 // Config carries everything a backend adapter needs to connect.
+// The model is deliberately not here: it travels per request in
+// ChatRequest, one source of truth instead of two.
 type Config struct {
 	BaseURL string // e.g. http://localhost:11434 for Ollama
-	Model   string // e.g. llama3.2, qwen2.5
 }

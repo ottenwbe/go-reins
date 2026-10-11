@@ -4,9 +4,7 @@
 package llamacpp
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -22,17 +20,18 @@ type LlamaCpp struct {
 	client  *http.Client
 }
 
-// New creates a llama.cpp backend. An empty cfg.BaseURL falls back to
-// the default local address.
-func New(cfg backend.Config) *LlamaCpp {
-	url := cfg.BaseURL
-	if url == "" {
-		url = defaultURL
+// New creates a llama.cpp backend. An empty cfg.BaseURL falls back
+// to the default local address; an invalid URL (wrong scheme, no
+// host) fails here rather than at the first request.
+func New(cfg backend.Config) (*LlamaCpp, error) {
+	base, err := backend.ParseBaseURL(cfg.BaseURL, defaultURL)
+	if err != nil {
+		return nil, err
 	}
 	return &LlamaCpp{
-		baseURL: url,
+		baseURL: base,
 		client:  &http.Client{Timeout: 120 * time.Second},
-	}
+	}, nil
 }
 
 // Name implements backend.Backend.
@@ -40,38 +39,18 @@ func (l *LlamaCpp) Name() string { return "llamacpp" }
 
 // Chat implements backend.Backend.
 func (l *LlamaCpp) Chat(ctx context.Context, req backend.ChatRequest) (backend.ChatResponse, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   false,
-	})
-	if err != nil {
-		return backend.ChatResponse{}, fmt.Errorf("llamacpp: marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, l.baseURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return backend.ChatResponse{}, fmt.Errorf("llamacpp: build request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := l.client.Do(httpReq)
-	if err != nil {
-		return backend.ChatResponse{}, fmt.Errorf("llamacpp: request %s: %w", l.baseURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return backend.ChatResponse{}, fmt.Errorf("llamacpp: unexpected status %s", resp.Status)
-	}
-
 	var payload struct {
 		Choices []struct {
 			Message backend.Message `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return backend.ChatResponse{}, fmt.Errorf("llamacpp: decode response: %w", err)
+	err := backend.PostJSON(ctx, l.client, l.baseURL, "/v1/chat/completions", map[string]any{
+		"model":    req.Model,
+		"messages": req.Messages,
+		"stream":   false,
+	}, &payload)
+	if err != nil {
+		return backend.ChatResponse{}, fmt.Errorf("llamacpp: %w", err)
 	}
 	if len(payload.Choices) == 0 {
 		return backend.ChatResponse{}, fmt.Errorf("llamacpp: empty response")
