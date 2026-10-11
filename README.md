@@ -300,9 +300,10 @@ go test ./...
 
 Tests cover the agent loop (against a fake backend) and both adapters
 (against `httptest` mock servers), so no running backend is needed.
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs
-`go vet`, `go build`, and `go test` on every push and pull request,
-using the Go version pinned in `go.mod`.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds all
+packages and runs `make check` (gofmt, vet, tests, SBOM freshness) on
+every push and pull request — the same gate as locally — using the Go
+version pinned in `go.mod`.
 
 ## Roadmap
 
