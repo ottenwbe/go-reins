@@ -81,7 +81,9 @@ after, so the next `/model` is one paste away. `/model` checks the
 name against that listing before switching (ollama tag shorthand
 like `llama3.2` for `llama3.2:latest` counts); a name the backend
 does not offer is refused with what is available. A configured
-`--url` carries over unchanged on a switch.
+`--url` belongs to the startup backend — after a `/backend` switch
+the new backend uses its own default URL, and switching back
+restores the configured one.
 
 ### `licenses` — what the binary carries
 

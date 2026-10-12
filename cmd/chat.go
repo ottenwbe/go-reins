@@ -38,9 +38,10 @@ func chatSession(cmd *cobra.Command, args []string) error {
 	}
 
 	// /backend swaps the adapter mid-session: same constructor and
-	// validation as startup, applied to the live agent. An explicitly
-	// configured --url carries over (the operator may override it per
-	// backend later); the conversation history stays valid.
+	// validation as startup, applied to the live agent. The
+	// configured --url belongs to the startup backend and is not
+	// carried to the new one, which applies its own default; the
+	// conversation history stays valid.
 	switchBackend := func(name string) error {
 		b, err := session.NewBackend(conf, name)
 		if err != nil {

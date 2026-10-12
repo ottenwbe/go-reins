@@ -63,12 +63,14 @@ func NewAgent(cfg config.Config, approve agent.Approver, opts ...agent.Option) (
 	return agent.New(b, cfg.Model, systemPrompt, tools, opts...), nil
 }
 
-// NewBackend builds the named backend from cfg (and its URL). It
-// backs the chat REPL's /backend switch: the same validation as
-// startup applies to a mid-session swap. The model is deliberately
-// not wired here - it travels per request.
+// NewBackend builds the named backend from cfg. It backs the chat
+// REPL's /backend switch: the same validation as startup applies to
+// a mid-session swap. The model is deliberately not wired here - it
+// travels per request - and cfg.URL belongs to the backend cfg
+// selects: a switch to any other backend leaves the URL behind and
+// the adapter applies its own default (see backendURL).
 func NewBackend(cfg config.Config, name string) (backend.Backend, error) {
-	bcfg := backend.Config{BaseURL: cfg.URL}
+	bcfg := backend.Config{BaseURL: backendURL(cfg, name)}
 	switch name {
 	case "ollama":
 		b, err := ollama.New(bcfg)
@@ -79,6 +81,18 @@ func NewBackend(cfg config.Config, name string) (backend.Backend, error) {
 	default:
 		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", name)
 	}
+}
+
+// backendURL picks the base URL for a named backend: cfg.URL when
+// the operator configured it for that backend, empty otherwise so
+// the adapter applies its own default. A URL resolved for one
+// backend - say ollama on a non-default port - would point every
+// other backend at the wrong server if it carried over a switch.
+func backendURL(cfg config.Config, name string) string {
+	if name == cfg.Backend {
+		return cfg.URL
+	}
+	return ""
 }
 
 // newBackend builds the backend selected by cfg. It cannot live in

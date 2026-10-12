@@ -1,6 +1,9 @@
 package session
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -44,6 +47,55 @@ func TestNewBackendNamed(t *testing.T) {
 
 	if _, err := NewBackend(cfg, "gpt-9000"); err == nil || !strings.Contains(err.Error(), "unknown backend") {
 		t.Errorf("NewBackend(unknown) error = %v, want unknown backend", err)
+	}
+}
+
+// TestNewBackendURLScopedToConfiguredBackend pins the --url scoping
+// behind /backend: the URL from the config chain applies only to
+// the backend it was configured for; any other backend gets the
+// empty URL and falls back to its own default. The no-URL case is
+// covered too - empty stays empty for both names.
+func TestNewBackendURLScopedToConfiguredBackend(t *testing.T) {
+	cfg := config.Config{Backend: "ollama", Model: "m", URL: "http://ollama.example:11434"}
+
+	if got := backendURL(cfg, "ollama"); got != cfg.URL {
+		t.Errorf("backendURL(ollama) = %q, want the configured URL %q", got, cfg.URL)
+	}
+	if got := backendURL(cfg, "llamacpp"); got != "" {
+		t.Errorf("backendURL(llamacpp) = %q, want empty so the adapter default applies", got)
+	}
+
+	// Without an explicit URL both sides are empty, which the
+	// adapters turn into their per-backend defaults.
+	bare := config.Config{Backend: "ollama", Model: "m"}
+	for _, name := range []string{"ollama", "llamacpp"} {
+		if got := backendURL(bare, name); got != "" {
+			t.Errorf("backendURL(%q) = %q, want empty when no URL is configured", name, got)
+		}
+	}
+}
+
+// TestNewBackendUsesConfiguredURL verifies the wiring end to end:
+// a backend built for the configured name reaches the configured
+// URL (here an httptest server), not the adapter default.
+func TestNewBackendUsesConfiguredURL(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{Backend: "ollama", Model: "m", URL: srv.URL}
+	b, err := NewBackend(cfg, "ollama")
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	if _, err := b.Models(context.Background()); err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if gotPath != "/api/tags" {
+		t.Errorf("request path = %q, want /api/tags (the configured URL must be used)", gotPath)
 	}
 }
 
