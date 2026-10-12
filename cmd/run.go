@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -68,7 +69,7 @@ func runInteractive(task string) error {
 // runHeadless is the non-TTY path: plain output on stdout and the
 // classic y/N prompt on stdin, so `go-reins run` stays scriptable.
 func runHeadless(task string) error {
-	a, err := session.NewAgent(conf, stdinApprover())
+	a, err := session.NewAgent(conf, stdinApprover(os.Stdin, os.Stderr))
 	if err != nil {
 		return err
 	}
@@ -98,25 +99,35 @@ func printHistory(history []backend.Message) {
 
 // stdinApprover is the human in the loop without a TUI: every tool
 // call is shown on stderr and must be confirmed on stdin. It returns
-// nil (allow everything) when --yes is set.
-func stdinApprover() agent.Approver {
+// nil (allow everything) when --yes is set. The in/out parameters
+// carry the streams so tests can drive it; production passes
+// os.Stdin and os.Stderr.
+func stdinApprover(in io.Reader, out io.Writer) agent.Approver {
 	if conf.Yes {
 		return nil
 	}
+	// One buffered reader for the whole run: building a fresh
+	// bufio.Reader per call would swallow piped answers into its
+	// buffer and lose them (printf 'y\ny\n' | go-reins run ...).
+	reader := bufio.NewReader(in)
 	return func(name, args string) bool {
-		fmt.Fprintf(os.Stderr, "\ntool call: %s %s\n", name, args)
-		fmt.Fprint(os.Stderr, "allow? [y/N]: ")
+		fmt.Fprintf(out, "\ntool call: %s %s\n", name, args)
+		fmt.Fprint(out, "allow? [y/N]: ")
 
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil && line == "" {
-			fmt.Fprintln(os.Stderr, "(could not read confirmation, defaulting to deny)")
+			// Nobody answered on stdin: cron, CI, < /dev/null.
+			// Deny, and tell the operator how to run unattended -
+			// automation opts in with --yes; auto-approval is
+			// never the default.
+			fmt.Fprintln(out, "(no confirmation available, defaulting to deny; for unattended runs, pass --yes)")
 			return false
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
 			return true
 		default:
-			fmt.Fprintln(os.Stderr, "denied")
+			fmt.Fprintln(out, "denied")
 			return false
 		}
 	}
