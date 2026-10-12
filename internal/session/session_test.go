@@ -28,6 +28,25 @@ func TestNewAgentRejectsUnknownBackend(t *testing.T) {
 	}
 }
 
+// TestNewBackendNamed pins the exported constructor behind the
+// chat REPL's /backend switch: it builds the named backend
+// regardless of what cfg selects, with the same validation.
+func TestNewBackendNamed(t *testing.T) {
+	cfg := config.Config{Backend: "ollama", Model: "llama3.2"}
+
+	b, err := NewBackend(cfg, "llamacpp")
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	if b.Name() != "llamacpp" {
+		t.Errorf("Name = %q, want llamacpp (the argument, not cfg.Backend)", b.Name())
+	}
+
+	if _, err := NewBackend(cfg, "gpt-9000"); err == nil || !strings.Contains(err.Error(), "unknown backend") {
+		t.Errorf("NewBackend(unknown) error = %v, want unknown backend", err)
+	}
+}
+
 func TestNewAgentRejectsMissingModel(t *testing.T) {
 	_, err := NewAgent(config.Config{Backend: "ollama"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no model set") {

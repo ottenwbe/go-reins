@@ -51,3 +51,21 @@ func (o *Ollama) Chat(ctx context.Context, req backend.ChatRequest) (backend.Cha
 	}
 	return backend.ChatResponse{Content: payload.Message.Content}, nil
 }
+
+// Models implements backend.Backend via Ollama's /api/tags: every
+// locally installed model, in the server's own order.
+func (o *Ollama) Models(ctx context.Context) ([]string, error) {
+	var payload struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := backend.GetJSON(ctx, o.client, o.baseURL, "/api/tags", &payload); err != nil {
+		return nil, fmt.Errorf("ollama: %w", err)
+	}
+	names := make([]string, 0, len(payload.Models))
+	for _, m := range payload.Models {
+		names = append(names, m.Name)
+	}
+	return names, nil
+}

@@ -63,14 +63,13 @@ func NewAgent(cfg config.Config, approve agent.Approver, opts ...agent.Option) (
 	return agent.New(b, cfg.Model, systemPrompt, tools, opts...), nil
 }
 
-// newBackend builds the backend selected by cfg. It cannot live in
-// the backend package: the adapters import it for the Backend
-// interface, so a selector there would be an import cycle.
-// newBackend builds the backend selected by config. The model is
-// not wired here - it travels per request (backend.ChatRequest).
-func newBackend(cfg config.Config) (backend.Backend, error) {
+// NewBackend builds the named backend from cfg (and its URL). It
+// backs the chat REPL's /backend switch: the same validation as
+// startup applies to a mid-session swap. The model is deliberately
+// not wired here - it travels per request.
+func NewBackend(cfg config.Config, name string) (backend.Backend, error) {
 	bcfg := backend.Config{BaseURL: cfg.URL}
-	switch cfg.Backend {
+	switch name {
 	case "ollama":
 		b, err := ollama.New(bcfg)
 		return b, err
@@ -78,8 +77,15 @@ func newBackend(cfg config.Config) (backend.Backend, error) {
 		b, err := llamacpp.New(bcfg)
 		return b, err
 	default:
-		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", cfg.Backend)
+		return nil, fmt.Errorf("unknown backend %q: expected ollama or llamacpp", name)
 	}
+}
+
+// newBackend builds the backend selected by cfg. It cannot live in
+// the backend package: the adapters import it for the Backend
+// interface, so a selector there would be an import cycle.
+func newBackend(cfg config.Config) (backend.Backend, error) {
+	return NewBackend(cfg, cfg.Backend)
 }
 
 // GateApprover returns the TUI gate's approver, or nil to

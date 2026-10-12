@@ -1,6 +1,9 @@
 package backend
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -30,6 +33,68 @@ func TestParseBaseURLRejects(t *testing.T) {
 		if _, err := ParseBaseURL(bad, "http://fallback"); err == nil {
 			t.Errorf("ParseBaseURL(%q): want error, got nil", bad)
 		}
+	}
+}
+
+func TestGetJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("Accept = %q, want application/json", got)
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	var out struct{ Ok bool }
+	if err := GetJSON(context.Background(), &http.Client{}, srv.URL, "/x", &out); err != nil {
+		t.Fatalf("GetJSON: %v", err)
+	}
+	if !out.Ok {
+		t.Error("GetJSON did not decode the response")
+	}
+}
+
+func TestGetJSONTrimsTrailingSlash(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	if err := GetJSON(context.Background(), &http.Client{}, srv.URL+"/", "/x", &struct{}{}); err != nil {
+		t.Fatalf("GetJSON: %v", err)
+	}
+	if gotPath != "/x" {
+		t.Errorf("path = %q, want /x (trailing slash must not double it)", gotPath)
+	}
+}
+
+func TestGetJSONCarriesServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"no models here"}`))
+	}))
+	defer srv.Close()
+
+	err := GetJSON(context.Background(), &http.Client{}, srv.URL, "/x", &struct{}{})
+	if err == nil || !strings.Contains(err.Error(), "no models here") {
+		t.Errorf("GetJSON error = %v, want server's message included", err)
+	}
+}
+
+func TestGetJSONRejectsBadBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	err := GetJSON(context.Background(), &http.Client{}, srv.URL, "/x", &struct{}{})
+	if err == nil || !strings.Contains(err.Error(), "decode response") {
+		t.Errorf("GetJSON error = %v, want decode error", err)
 	}
 }
 

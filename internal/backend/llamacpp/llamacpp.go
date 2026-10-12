@@ -57,3 +57,21 @@ func (l *LlamaCpp) Chat(ctx context.Context, req backend.ChatRequest) (backend.C
 	}
 	return backend.ChatResponse{Content: payload.Choices[0].Message.Content}, nil
 }
+
+// Models implements backend.Backend via the OpenAI-style /v1/models
+// endpoint llama-server exposes: the loaded model(s) by id.
+func (l *LlamaCpp) Models(ctx context.Context) ([]string, error) {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := backend.GetJSON(ctx, l.client, l.baseURL, "/v1/models", &payload); err != nil {
+		return nil, fmt.Errorf("llamacpp: %w", err)
+	}
+	names := make([]string, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		names = append(names, m.ID)
+	}
+	return names, nil
+}

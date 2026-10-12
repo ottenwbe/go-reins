@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -11,12 +12,51 @@ import (
 	"go-reins/internal/backend"
 )
 
+// switchStub is a second backend for the /backend tests: its own
+// name and model list, so a mid-session swap is observable.
+type switchStub struct {
+	name   string
+	models []string
+}
+
+func (s *switchStub) Name() string { return s.name }
+func (s *switchStub) Chat(context.Context, backend.ChatRequest) (backend.ChatResponse, error) {
+	return backend.ChatResponse{Content: "ok"}, nil
+}
+func (s *switchStub) Models(context.Context) ([]string, error) { return s.models, nil }
+
+// failModels wraps a stub whose listing always fails.
+type failModels struct{ *stubBackend }
+
+func (f *failModels) Models(context.Context) ([]string, error) {
+	return nil, errors.New("listing broke")
+}
+
+// startChat builds a chat model in the state the command tests
+// exercise: input focused and a window size applied.
+func startChat(a *agent.Agent, gate *ApprovalGate, switchBackend func(string) error) *chatModel {
+	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", switchBackend)
+	m.Init()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return next.(*chatModel)
+}
+
+// runCommand types a slash command into the input area and presses
+// enter, returning the model and the Cmd the submit armed (nil for
+// pure transcript commands).
+func runCommand(m *chatModel, line string) (*chatModel, tea.Cmd) {
+	next, _ := m.Update(tea.KeyPressMsg{Code: '/', Text: line})
+	m = next.(*chatModel)
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return next.(*chatModel), cmd
+}
+
 // TestChatModelStepFlow exercises the prompt -> step -> answer cycle.
 func TestChatModelStepFlow(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "the answer"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat · stub/m")
+	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", nil)
 	m.Init() // focuses the input area
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -76,7 +116,7 @@ func TestChatShowsCurrentTool(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, "go-reins chat · stub/m")
+	m := newChatModel(a, gate, feed, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -112,7 +152,7 @@ func TestChatModelMultilineInput(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat · stub/m")
+	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -151,7 +191,7 @@ func TestChatDropsStaleToolEvents(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, "go-reins chat · stub/m")
+	m := newChatModel(a, gate, feed, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -182,6 +222,189 @@ func TestChatDropsStaleToolEvents(t *testing.T) {
 	}
 	if m.state != chatReady {
 		t.Errorf("state after stale event = %v, want chatReady", m.state)
+	}
+}
+
+// TestChatModelCommand covers /model: setting a model updates the
+// agent and the header; a bare /model prints usage with the current
+// model; an unknown command names the available ones.
+func TestChatModelCommand(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	// Bare /model: usage line naming the current model, no Cmd.
+	m, cmd := runCommand(m, "/model")
+	if cmd != nil {
+		t.Errorf("/model armed %v, want nil", cmd)
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "usage: /model") ||
+		!strings.Contains(strings.Join(m.lines, "\n"), "current: m") {
+		t.Errorf("usage line missing: %v", m.lines)
+	}
+
+	// /model with a name: the agent switches and the live header
+	// shows the new model.
+	m, cmd = runCommand(m, "/model llama3.2")
+	if cmd != nil {
+		t.Errorf("/model <name> armed %v, want nil", cmd)
+	}
+	if a.Model() != "llama3.2" {
+		t.Errorf("agent model = %q, want llama3.2", a.Model())
+	}
+	if !strings.Contains(m.View().Content, "go-reins chat · stub/llama3.2") {
+		t.Errorf("header missing model switch: %q", m.headerText())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "model set to llama3.2") {
+		t.Errorf("confirmation line missing: %v", m.lines)
+	}
+	if m.state != chatReady {
+		t.Errorf("state after /model = %v, want chatReady", m.state)
+	}
+
+	// Unknown command: the transcript names what is available.
+	m, _ = runCommand(m, "/nope")
+	if !strings.Contains(strings.Join(m.lines, "\n"), "unknown command /nope") {
+		t.Errorf("unknown-command line missing: %v", m.lines)
+	}
+}
+
+// TestChatModelsCommand covers /models: the listing runs as a Cmd
+// and its result lands in the transcript; errors and empty lists
+// are reported instead of swallowed.
+func TestChatModelsCommand(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	// A backend with models to list.
+	a := agent.New(&switchStub{name: "stub", models: []string{"a", "b"}}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	m, cmd := runCommand(m, "/models")
+	if cmd == nil {
+		t.Fatal("/models armed no Cmd")
+	}
+	msg := cmd()
+	done, ok := msg.(modelsDoneMsg)
+	if !ok {
+		t.Fatalf("Cmd produced %T, want modelsDoneMsg", msg)
+	}
+	if done.err != nil || len(done.names) != 2 || done.names[0] != "a" {
+		t.Fatalf("modelsDoneMsg = %+v, want the stub's models", done)
+	}
+	next, _ := m.Update(msg)
+	m = next.(*chatModel)
+	// The listing is appended as one rendered transcript entry;
+	// lipgloss styles and pads each name line, so assert on the
+	// entry itself rather than a raw join.
+	if last := m.lines[len(m.lines)-1]; !strings.Contains(last, "a") || !strings.Contains(last, "b") {
+		t.Errorf("listing missing from transcript: %q", last)
+	}
+	if m.state != chatReady {
+		t.Errorf("state after /models = %v, want chatReady", m.state)
+	}
+
+	// A backend that lists nothing says so instead of printing an
+	// empty listing.
+	empty := agent.New(&switchStub{name: "empty"}, "m", "sys", nil)
+	m = startChat(empty, gate, nil)
+	m, cmd = runCommand(m, "/models")
+	msg = cmd()
+	next, _ = m.Update(msg)
+	m = next.(*chatModel)
+	if !strings.Contains(strings.Join(m.lines, "\n"), "no models") {
+		t.Errorf("empty listing not reported: %v", m.lines)
+	}
+
+	// A failed listing surfaces the error.
+	failing := agent.New(&failModels{&stubBackend{reply: "ok"}}, "m", "sys", nil)
+	m = startChat(failing, gate, nil)
+	m, cmd = runCommand(m, "/models")
+	msg = cmd()
+	next, _ = m.Update(msg)
+	m = next.(*chatModel)
+	if !strings.Contains(strings.Join(m.lines, "\n"), "listing broke") {
+		t.Errorf("listing error missing from transcript: %v", m.lines)
+	}
+}
+
+// TestChatBackendCommand covers /backend: a successful switch swaps
+// the agent's backend and arms the automatic listing against the
+// new one; errors, missing wiring, and bare usage are reported.
+func TestChatBackendCommand(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	target := &switchStub{name: "llamacpp", models: []string{"qwen2.5"}}
+	switched := ""
+	m := startChat(a, gate, func(name string) error {
+		switched = name
+		if name != "llamacpp" {
+			return errors.New("no such backend here")
+		}
+		a.SetBackend(target)
+		return nil
+	})
+
+	// Bare /backend: usage with the current backend.
+	m, cmd := runCommand(m, "/backend")
+	if cmd != nil {
+		t.Errorf("/backend armed %v, want nil", cmd)
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "usage: /backend") {
+		t.Errorf("usage line missing: %v", m.lines)
+	}
+
+	// A switch: the closure runs, the header updates, and the
+	// listing Cmd queries the new backend.
+	m, cmd = runCommand(m, "/backend llamacpp")
+	if switched != "llamacpp" {
+		t.Errorf("switch closure saw %q, want llamacpp", switched)
+	}
+	if a.BackendName() != "llamacpp" {
+		t.Errorf("agent backend = %q, want llamacpp", a.BackendName())
+	}
+	if !strings.Contains(m.headerText(), "llamacpp/m") {
+		t.Errorf("header after switch = %q, want llamacpp/m", m.headerText())
+	}
+	if cmd == nil {
+		t.Fatal("switch armed no listing Cmd")
+	}
+	msg := cmd()
+	done, ok := msg.(modelsDoneMsg)
+	if !ok || done.err != nil || len(done.names) != 1 || done.names[0] != "qwen2.5" {
+		t.Fatalf("listing after switch = %+v (%T), want the new backend's models", msg, msg)
+	}
+	next, _ := m.Update(msg)
+	m = next.(*chatModel)
+	if !strings.Contains(strings.Join(m.lines, "\n"), "backend switched to llamacpp") {
+		t.Errorf("switch confirmation missing: %v", m.lines)
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "qwen2.5") {
+		t.Errorf("listing after switch missing: %v", m.lines)
+	}
+
+	// A failing switch reports the error, arms nothing, and leaves
+	// the backend untouched.
+	m, cmd = runCommand(m, "/backend ollama")
+	if cmd != nil {
+		t.Errorf("failed switch still armed %v", cmd)
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "no such backend here") {
+		t.Errorf("switch error missing: %v", m.lines)
+	}
+	if a.BackendName() != "llamacpp" {
+		t.Errorf("backend after failed switch = %q, want llamacpp", a.BackendName())
+	}
+
+	// Without wiring, /backend says so instead of crashing.
+	bare := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	m = startChat(bare, gate, nil)
+	m, _ = runCommand(m, "/backend ollama")
+	if !strings.Contains(strings.Join(m.lines, "\n"), "not wired up") {
+		t.Errorf("unwired switch not reported: %v", m.lines)
 	}
 }
 

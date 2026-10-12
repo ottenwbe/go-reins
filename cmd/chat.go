@@ -37,6 +37,18 @@ func chatSession(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	header := fmt.Sprintf("go-reins chat · %s/%s", conf.Backend, conf.Model)
-	return tui.Chat(a, gate, feed, header)
+	// /backend swaps the adapter mid-session: same constructor and
+	// validation as startup, applied to the live agent. An explicitly
+	// configured --url carries over (the operator may override it per
+	// backend later); the conversation history stays valid.
+	switchBackend := func(name string) error {
+		b, err := session.NewBackend(conf, name)
+		if err != nil {
+			return err
+		}
+		a.SetBackend(b)
+		return nil
+	}
+
+	return tui.Chat(a, gate, feed, "go-reins chat", switchBackend)
 }

@@ -66,6 +66,21 @@ line that shows which tool the agent is using while it works. The
 conversation persists across prompts for the whole session; ctrl+c
 quits. Requires a terminal.
 
+Slash commands manage the live session and never reach the model:
+
+| Command | Effect |
+| --- | --- |
+| `/models` | list the models the current backend can serve |
+| `/model <name>` | switch the model used from the next prompt on |
+| `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
+
+The header line always shows the backend and model the next request
+will use. A backend switch keeps the conversation history — messages
+are backend-agnostic — and lists the new backend's models right
+after, so the next `/model` is one paste away. The model is not
+validated against that list, and a configured `--url` carries over
+unchanged on a switch.
+
 ### `licenses` — what the binary carries
 
 ```sh

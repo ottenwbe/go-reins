@@ -38,6 +38,10 @@ type Backend interface {
 	Name() string
 	// Chat sends the message history and returns the model's reply.
 	Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
+	// Models lists the names of the models the backend can serve.
+	// It backs the chat REPL's /models command; names are the same
+	// strings ChatRequest.Model accepts.
+	Models(ctx context.Context) ([]string, error)
 }
 
 // Config carries everything a backend adapter needs to connect.

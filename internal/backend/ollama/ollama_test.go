@@ -74,6 +74,52 @@ func TestNewNormalizesTrailingSlash(t *testing.T) {
 	}
 }
 
+// TestModelsListsAPITags verifies the /models listing: a GET to
+// /api/tags, the model names in the server's own order.
+func TestModelsListsAPITags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			t.Errorf("path = %q, want /api/tags", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"models":[{"name":"llama3.2:latest"},{"name":"qwen2.5:0.5b"}]}`))
+	}))
+	defer srv.Close()
+
+	o, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	names, err := o.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(names) != 2 || names[0] != "llama3.2:latest" || names[1] != "qwen2.5:0.5b" {
+		t.Errorf("names = %v, want [llama3.2:latest qwen2.5:0.5b]", names)
+	}
+}
+
+// TestModelsCarriesServerError pins that a listing failure keeps the
+// server's own message, the same way a failed chat does.
+func TestModelsCarriesServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"daemon not running"}`))
+	}))
+	defer srv.Close()
+
+	o, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = o.Models(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "daemon not running") {
+		t.Errorf("Models error = %v, want server's message included", err)
+	}
+}
+
 func TestChatCarriesServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
