@@ -50,6 +50,10 @@ printf 'y\ny\n' | ./go-reins run --tools shell "check disk usage and OS"
 ./go-reins run --yes --turns --history "what OS is this?" < /dev/null
 ```
 
+When stdin holds no answer (EOF: cron, CI, `< /dev/null`), the call
+is denied and the prompt says so — unattended runs must opt in to
+auto-approval with `--yes`; it is never the default.
+
 ### `chat` — an interactive session
 
 ```sh
