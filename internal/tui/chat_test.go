@@ -542,6 +542,58 @@ func TestChatModelValidationOutOfOrder(t *testing.T) {
 	}
 }
 
+// TestChatSwitchListingSupersededByModelCommand pins the follow-up
+// guard from the review: the listing a /backend switch arms carries
+// the switch's generation, so when a /model issued while it was in
+// flight has already picked a model, the listing's names still
+// print but its reconciliation is discarded - the operator's
+// explicit choice stands.
+func TestChatSwitchListingSupersededByModelCommand(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	a := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
+	target := &switchStub{name: "llamacpp", models: []string{"qwen2.5"}}
+	m := startChat(a, gate, func(string) error {
+		a.SetBackend(target)
+		return nil
+	})
+
+	// The switch arms its listing; before it lands the operator
+	// picks a model on the new backend.
+	m, sw := runCommand(m, "/backend llamacpp")
+	if sw == nil {
+		t.Fatal("/backend armed no listing Cmd")
+	}
+	m, val := runCommand(m, "/model qwen2.5")
+	if val == nil {
+		t.Fatal("/model armed no validation Cmd")
+	}
+
+	// The operator's choice lands first and applies.
+	next, _ := m.Update(val())
+	m = next.(*chatModel)
+	if a.Model() != "qwen2.5" {
+		t.Fatalf("model after validation = %q, want qwen2.5", a.Model())
+	}
+
+	// The switch's listing lands last, an older snapshot of the
+	// server's models that no longer contains the choice.
+	target.models = []string{"other"}
+	next, _ = m.Update(sw())
+	m = next.(*chatModel)
+	if a.Model() != "qwen2.5" {
+		t.Errorf("superseded reconciliation changed model to %q, want qwen2.5", a.Model())
+	}
+	transcript := strings.Join(m.lines, "\n")
+	if !strings.Contains(transcript, "other") {
+		t.Errorf("superseded listing did not print its names: %v", m.lines)
+	}
+	if strings.Contains(transcript, "is not served here") {
+		t.Errorf("superseded reconciliation left a note: %v", m.lines)
+	}
+}
+
 // TestChatModelsCommand covers /models: the listing runs as a Cmd
 // and its result lands in the transcript; errors and empty lists
 // are reported instead of swallowed.

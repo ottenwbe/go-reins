@@ -49,7 +49,7 @@ type chatModel struct {
 	approval *ApprovalRequest
 	tool     ToolEvent // tool of the running step, for the status line
 	step     *stepScope
-	modelSeq int // generation of the newest armed /model validation; older results are dropped
+	modelSeq int // generation of the newest model-deciding command (/model, /backend); older results are dropped
 	width    int
 	height   int
 }
@@ -212,7 +212,13 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
-		if msg.switched {
+		// The switch's follow-up reconciles only while it is
+		// still the newest model-deciding command: a /model
+		// issued while the listing was in flight already picked
+		// a model, and the reconciliation must not override
+		// that choice. The names still print above - they are
+		// information, not a decision.
+		if msg.switched && msg.seq == m.modelSeq {
 			m.reconcileModel(msg.names)
 		}
 		return m, nil
@@ -332,12 +338,12 @@ func (m *chatModel) appendLine(line string) {
 // modelsDoneMsg carries the outcome of a model listing back to the
 // REPL; the listing runs as a Cmd so the UI never blocks on HTTP.
 // want names the model a /model command asked to validate and
-// switch to (empty for plain listings), seq is that command's
-// generation so a listing that finished after a newer /model is
-// dropped, backend names the backend the listing ran against so a
-// result that raced a /backend switch is dropped too, and switched
-// marks the listing a /backend switch armed to follow up on its
-// model.
+// switch to (empty for plain listings), seq is the generation of
+// the model-deciding command that armed it (0 for plain listings,
+// which only print), backend names the backend the listing ran
+// against so a result that raced a /backend switch is dropped,
+// and switched marks the listing a /backend switch armed to follow
+// up on its model.
 type modelsDoneMsg struct {
 	names    []string
 	want     string
@@ -476,8 +482,12 @@ func (m *chatModel) command(line string) tea.Cmd {
 		// The old model almost certainly does not exist on the
 		// new backend; list what does, and let the listing's
 		// follow-up (reconcileModel) keep or replace the model.
+		// The switch is a model-deciding command like /model, so
+		// it takes a generation: a /model issued while the
+		// listing is in flight supersedes the reconciliation.
+		m.modelSeq++
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
-		return m.listModels("", 0, true)
+		return m.listModels("", m.modelSeq, true)
 
 	default:
 		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))
