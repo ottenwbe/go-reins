@@ -187,11 +187,6 @@ func (a *Agent) BackendName() string { return a.backend.Name() }
 // compare Backend().Name() later to spot results gone stale.
 func (a *Agent) Backend() backend.Backend { return a.backend }
 
-// Models lists the models the current backend can serve.
-func (a *Agent) Models(ctx context.Context) ([]string, error) {
-	return a.backend.Models(ctx)
-}
-
 // RunResult captures the outcome of a single Run: the final answer,
 // how many backend round trips it took, and the full conversation
 // history for review.

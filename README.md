@@ -77,12 +77,14 @@ Slash commands manage the live session and never reach the model:
 The header line always shows the backend and model the next request
 will use. A backend switch keeps the conversation history — messages
 are backend-agnostic — and lists the new backend's models right
-after; when the new backend does not serve the current model, the
-first listed one is selected automatically, so the next prompt just
-works. `/model` checks the name against that listing before
-switching (ollama tag shorthand counts — asking for `llama3.2`
-selects the listed `llama3.2:…` variant); a name the backend does
-not offer is refused with what is available. A configured `--url` belongs to the startup backend —
+after; the current model survives the switch when the new backend
+serves it (normalized to the listed variant when only a specific
+tag exists), and otherwise the first listed one is selected
+automatically, so the next prompt just works. `/model` checks the
+name against that listing before switching (ollama tag shorthand
+counts — asking for `llama3.2` selects the listed `llama3.2:…`
+variant); a name the backend does not offer is refused with what is
+available. A configured `--url` belongs to the startup backend —
 after a `/backend` switch the new backend uses its own default URL,
 and switching back restores the configured one.
 
