@@ -347,13 +347,61 @@ func TestChatModelCommandValidation(t *testing.T) {
 	if m.state != chatBusy {
 		t.Fatalf("state after submit = %v, want chatBusy", m.state)
 	}
-	next, _ = m.Update(modelsDoneMsg{names: []string{"llama3.2"}, want: "llama3.2"})
+	next, _ = m.Update(modelsDoneMsg{names: []string{"llama3.2"}, want: "llama3.2", backend: "stub"})
 	m = next.(*chatModel)
 	if busy.Model() != "m" {
 		t.Errorf("model set while busy = %q, want m (unchanged)", busy.Model())
 	}
 	if !strings.Contains(strings.Join(m.lines, "\n"), "retry /model") {
 		t.Errorf("busy-refusal line missing: %v", m.lines)
+	}
+}
+
+// TestChatStaleListingDroppedAfterBackendSwitch pins the race fix:
+// a listing Cmd running against the previous backend must not land
+// after a /backend switch - neither set a model the new backend
+// may not serve nor print the old backend's list. The fresh
+// listing the switch itself armed still shows.
+func TestChatStaleListingDroppedAfterBackendSwitch(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	a := agent.New(&switchStub{name: "ollama", models: []string{"m2"}}, "m", "sys", nil)
+	target := &switchStub{name: "llamacpp", models: []string{"qwen2.5"}}
+	m := startChat(a, gate, func(string) error {
+		a.SetBackend(target)
+		return nil
+	})
+
+	// /model arms its validation against the current backend…
+	m, stale := runCommand(m, "/model m2")
+	if stale == nil {
+		t.Fatal("/model armed no validation Cmd")
+	}
+	// …and the operator switches before the listing lands. The
+	// switch arms a fresh listing of its own.
+	m, fresh := runCommand(m, "/backend llamacpp")
+	if fresh == nil {
+		t.Fatal("/backend armed no listing Cmd")
+	}
+
+	// The stale validation arrives first: dropped, the model is
+	// unchanged, and nothing claims it was set.
+	next, _ := m.Update(stale())
+	m = next.(*chatModel)
+	if a.Model() != "m" {
+		t.Errorf("stale validation changed model to %q, want m", a.Model())
+	}
+	if strings.Contains(strings.Join(m.lines, "\n"), "model set to m2") {
+		t.Errorf("stale validation confirmed a switch: %v", m.lines)
+	}
+
+	// The listing the switch armed still lands and describes the
+	// backend the session now uses.
+	next, _ = m.Update(fresh())
+	m = next.(*chatModel)
+	if !strings.Contains(strings.Join(m.lines, "\n"), "qwen2.5") {
+		t.Errorf("fresh listing missing from transcript: %v", m.lines)
 	}
 }
 

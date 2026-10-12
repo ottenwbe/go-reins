@@ -181,6 +181,12 @@ func (a *Agent) SetBackend(b backend.Backend) { a.backend = b }
 // BackendName names the current backend, for display.
 func (a *Agent) BackendName() string { return a.backend.Name() }
 
+// Backend returns the current backend. Callers that outlive the
+// moment - a chat listing Cmd running in its own goroutine -
+// capture it now so a concurrent SetBackend cannot race them, and
+// compare Backend().Name() later to spot results gone stale.
+func (a *Agent) Backend() backend.Backend { return a.backend }
+
 // Models lists the models the current backend can serve.
 func (a *Agent) Models(ctx context.Context) ([]string, error) {
 	return a.backend.Models(ctx)

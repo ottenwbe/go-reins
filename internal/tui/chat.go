@@ -183,7 +183,13 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsDoneMsg:
 		// The listing from a /models or /backend command, or the
-		// validation behind a /model, arrived.
+		// validation behind a /model, arrived. One that raced a
+		// /backend switch describes a backend the session no
+		// longer uses: drop it, or a stale /model validation could
+		// set a name the new backend may not serve.
+		if msg.backend != m.agent.BackendName() {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
 			return m, nil
@@ -314,18 +320,27 @@ func (m *chatModel) appendLine(line string) {
 // modelsDoneMsg carries the outcome of a model listing back to the
 // REPL; the listing runs as a Cmd so the UI never blocks on HTTP.
 // want names the model a /model command asked to validate and
-// switch to; it is empty for plain /models and /backend listings.
+// switch to (empty for plain /models and /backend listings), and
+// backend names the backend the listing ran against, so a result
+// that raced a /backend switch is recognizable and dropped.
 type modelsDoneMsg struct {
-	names []string
-	want  string
-	err   error
+	names   []string
+	want    string
+	backend string
+	err     error
 }
 
-// listModels arms the listing Cmd against the current backend.
+// listModels arms the listing Cmd against the current backend. The
+// backend is captured here, in the Update loop - not read inside
+// the Cmd - so a /backend switch racing the listing never writes
+// a.backend under it; the name tag on the msg lets Update drop a
+// listing that no longer describes the session's backend.
 func (m *chatModel) listModels(want string) tea.Cmd {
+	b := m.agent.Backend()
+	name := b.Name()
 	return func() tea.Msg {
-		names, err := m.agent.Models(m.ctx)
-		return modelsDoneMsg{names: names, want: want, err: err}
+		names, err := b.Models(m.ctx)
+		return modelsDoneMsg{names: names, want: want, backend: name, err: err}
 	}
 }
 
