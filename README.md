@@ -71,15 +71,17 @@ Slash commands manage the live session and never reach the model:
 | Command | Effect |
 | --- | --- |
 | `/models` | list the models the current backend can serve |
-| `/model <name>` | switch the model used from the next prompt on |
+| `/model <name>` | switch the model, validated against the listing |
 | `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
 
 The header line always shows the backend and model the next request
 will use. A backend switch keeps the conversation history — messages
 are backend-agnostic — and lists the new backend's models right
-after, so the next `/model` is one paste away. The model is not
-validated against that list, and a configured `--url` carries over
-unchanged on a switch.
+after, so the next `/model` is one paste away. `/model` checks the
+name against that listing before switching (ollama tag shorthand
+like `llama3.2` for `llama3.2:latest` counts); a name the backend
+does not offer is refused with what is available. A configured
+`--url` carries over unchanged on a switch.
 
 ### `licenses` — what the binary carries
 

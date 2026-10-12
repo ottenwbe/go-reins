@@ -225,13 +225,14 @@ func TestChatDropsStaleToolEvents(t *testing.T) {
 	}
 }
 
-// TestChatModelCommand covers /model: setting a model updates the
-// agent and the header; a bare /model prints usage with the current
-// model; an unknown command names the available ones.
+// TestChatModelCommand covers /model: a name the backend offers
+// switches the agent and the header after validation; a bare /model
+// prints usage with the current model; an unknown command names the
+// available ones.
 func TestChatModelCommand(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
-	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	a := agent.New(&switchStub{name: "stub", models: []string{"llama3.2:latest", "stub-model"}}, "m", "sys", nil)
 	m := startChat(a, gate, nil)
 
 	// Bare /model: usage line naming the current model, no Cmd.
@@ -244,12 +245,15 @@ func TestChatModelCommand(t *testing.T) {
 		t.Errorf("usage line missing: %v", m.lines)
 	}
 
-	// /model with a name: the agent switches and the live header
-	// shows the new model.
+	// /model with a name: the switch is validated against the
+	// backend's listing, then the agent switches and the live
+	// header shows the new model.
 	m, cmd = runCommand(m, "/model llama3.2")
-	if cmd != nil {
-		t.Errorf("/model <name> armed %v, want nil", cmd)
+	if cmd == nil {
+		t.Fatal("/model <name> armed no validation Cmd")
 	}
+	next, _ := m.Update(cmd())
+	m = next.(*chatModel)
 	if a.Model() != "llama3.2" {
 		t.Errorf("agent model = %q, want llama3.2", a.Model())
 	}
@@ -267,6 +271,89 @@ func TestChatModelCommand(t *testing.T) {
 	m, _ = runCommand(m, "/nope")
 	if !strings.Contains(strings.Join(m.lines, "\n"), "unknown command /nope") {
 		t.Errorf("unknown-command line missing: %v", m.lines)
+	}
+}
+
+// TestChatModelCommandValidation pins the /model guard rails: a
+// name the backend does not offer is refused with the available
+// ones, tag shorthand is accepted, a failed or empty listing
+// changes nothing, and a validation that lands while a step runs
+// is not applied.
+func TestChatModelCommandValidation(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	// Refused: the requested model is not in the listing, and the
+	// transcript names what is.
+	a := agent.New(&switchStub{name: "stub", models: []string{"a", "b"}}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+	m, cmd := runCommand(m, "/model nope")
+	if cmd == nil {
+		t.Fatal("/model armed no validation Cmd")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(*chatModel)
+	if a.Model() != "m" {
+		t.Errorf("model after refused switch = %q, want m", a.Model())
+	}
+	transcript := strings.Join(m.lines, "\n")
+	if !strings.Contains(transcript, "no model nope") || !strings.Contains(transcript, "available: a, b") {
+		t.Errorf("refusal line wrong: %v", m.lines)
+	}
+
+	// Accepted via tag shorthand: ollama resolves "llama3.2" to
+	// "llama3.2:latest".
+	sh := agent.New(&switchStub{name: "stub", models: []string{"llama3.2:latest"}}, "m", "sys", nil)
+	m = startChat(sh, gate, nil)
+	m, cmd = runCommand(m, "/model llama3.2")
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if sh.Model() != "llama3.2" {
+		t.Errorf("model after shorthand switch = %q, want llama3.2", sh.Model())
+	}
+
+	// A failed listing changes nothing.
+	failing := agent.New(&failModels{&stubBackend{reply: "ok"}}, "m", "sys", nil)
+	m = startChat(failing, gate, nil)
+	m, cmd = runCommand(m, "/model x")
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if failing.Model() != "m" {
+		t.Errorf("model after failed validation = %q, want m", failing.Model())
+	}
+
+	// A backend with no models refuses the switch instead of
+	// accepting every name.
+	none := agent.New(&switchStub{name: "empty"}, "m", "sys", nil)
+	m = startChat(none, gate, nil)
+	m, cmd = runCommand(m, "/model x")
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if none.Model() != "m" {
+		t.Errorf("model after empty-listing switch = %q, want m", none.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "no model x") {
+		t.Errorf("empty-listing refusal missing: %v", m.lines)
+	}
+
+	// A validation that lands while a step is running is not
+	// applied: the running step owns the agent's model.
+	busy := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	m = startChat(busy, gate, nil)
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	if m.state != chatBusy {
+		t.Fatalf("state after submit = %v, want chatBusy", m.state)
+	}
+	next, _ = m.Update(modelsDoneMsg{names: []string{"llama3.2"}, want: "llama3.2"})
+	m = next.(*chatModel)
+	if busy.Model() != "m" {
+		t.Errorf("model set while busy = %q, want m (unchanged)", busy.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "retry /model") {
+		t.Errorf("busy-refusal line missing: %v", m.lines)
 	}
 }
 

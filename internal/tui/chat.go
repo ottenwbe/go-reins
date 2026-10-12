@@ -182,10 +182,14 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case modelsDoneMsg:
-		// The listing from a /models command (or the automatic
-		// one after a backend switch) arrived.
+		// The listing from a /models or /backend command, or the
+		// validation behind a /model, arrived.
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
+			return m, nil
+		}
+		if msg.want != "" {
+			m.applyModel(msg.want, msg.names)
 			return m, nil
 		}
 		if len(msg.names) == 0 {
@@ -309,17 +313,54 @@ func (m *chatModel) appendLine(line string) {
 
 // modelsDoneMsg carries the outcome of a model listing back to the
 // REPL; the listing runs as a Cmd so the UI never blocks on HTTP.
+// want names the model a /model command asked to validate and
+// switch to; it is empty for plain /models and /backend listings.
 type modelsDoneMsg struct {
 	names []string
+	want  string
 	err   error
 }
 
 // listModels arms the listing Cmd against the current backend.
-func (m *chatModel) listModels() tea.Cmd {
+func (m *chatModel) listModels(want string) tea.Cmd {
 	return func() tea.Msg {
 		names, err := m.agent.Models(m.ctx)
-		return modelsDoneMsg{names: names, err: err}
+		return modelsDoneMsg{names: names, want: want, err: err}
 	}
+}
+
+// modelAvailable reports the listed name matching want, if any: an
+// exact match, or a tag variant of it - ollama accepts "llama3.2"
+// as shorthand for "llama3.2:latest". Empty means not available.
+func modelAvailable(want string, names []string) string {
+	for _, n := range names {
+		if n == want || strings.HasPrefix(n, want+":") {
+			return n
+		}
+	}
+	return ""
+}
+
+// applyModel settles a /model command whose validation listing came
+// back: switch when the backend offers the name (or a tag variant
+// of it), otherwise say what is available. A step in flight owns
+// the agent - setting a.model mid-step would race the running
+// loop - so a listing that lands while busy is not applied.
+func (m *chatModel) applyModel(want string, names []string) {
+	if m.state != chatReady {
+		m.appendLine(errorStyle.Render("a step is running - model not changed, retry /model when idle"))
+		return
+	}
+	if modelAvailable(want, names) == "" {
+		if len(names) == 0 {
+			m.appendLine(errorStyle.Render("no model " + want + " · the backend reported no models"))
+			return
+		}
+		m.appendLine(errorStyle.Render("no model " + want + " · available: " + strings.Join(names, ", ")))
+		return
+	}
+	m.agent.SetModel(want)
+	m.appendLine(dimStyle.Render("model set to " + want))
 }
 
 // command runs one REPL slash command. Commands act on the live
@@ -336,7 +377,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 	switch name {
 	case "/models":
 		m.appendLine(dimStyle.Render("asking " + m.agent.BackendName() + " for its models…"))
-		return m.listModels()
+		return m.listModels("")
 
 	case "/model":
 		model := strings.TrimSpace(rest)
@@ -344,9 +385,11 @@ func (m *chatModel) command(line string) tea.Cmd {
 			m.appendLine(errorStyle.Render("usage: /model <name> · current: " + m.agent.Model()))
 			return nil
 		}
-		m.agent.SetModel(model)
-		m.appendLine(dimStyle.Render("model set to " + model))
-		return nil
+		// Validate against the backend's listing before switching:
+		// a typo would otherwise only surface as a failed next
+		// step. The check runs as a Cmd so the UI never blocks.
+		m.appendLine(dimStyle.Render("checking " + model + " against " + m.agent.BackendName() + "'s models…"))
+		return m.listModels(model)
 
 	case "/backend":
 		target := strings.TrimSpace(rest)
@@ -366,7 +409,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 		// new backend; list what does, so the next step is one
 		// /model away.
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
-		return m.listModels()
+		return m.listModels("")
 
 	default:
 		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))
