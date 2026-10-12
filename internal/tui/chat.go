@@ -31,25 +31,28 @@ const (
 // prompt to prompt via agent.Step, so the model keeps its context
 // within the session.
 type chatModel struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	agent  *agent.Agent
-	gate   *ApprovalGate
-	feed   *ToolFeed
-	header string
-	prompt string // prompt of the running step, for the status line
+	ctx           context.Context
+	cancel        context.CancelFunc
+	agent         *agent.Agent
+	gate          *ApprovalGate
+	feed          *ToolFeed
+	title         string                  // session line prefix; the live header appends backend/model
+	switchBackend func(name string) error // wires /backend to session.NewBackend
+	prompt        string                  // prompt of the running step, for the status line
 
-	history  []backend.Message
-	lines    []string
-	viewport viewport.Model
-	textarea textarea.Model
-	spinner  spinner.Model
-	state    chatState
-	approval *ApprovalRequest
-	tool     ToolEvent // tool of the running step, for the status line
-	step     *stepScope
-	width    int
-	height   int
+	history    []backend.Message
+	lines      []string
+	viewport   viewport.Model
+	textarea   textarea.Model
+	spinner    spinner.Model
+	state      chatState
+	approval   *ApprovalRequest
+	tool       ToolEvent // tool of the running step, for the status line
+	step       *stepScope
+	modelSeq   int // generation of the newest model-deciding command (/model, /backend); older results are dropped
+	appliedSeq int // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	width      int
+	height     int
 }
 
 // stepScope bounds the waiter Cmds armed for one agent step. When
@@ -72,11 +75,11 @@ func (s *stepScope) cancel() {
 	}
 }
 
-func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header string) *chatModel {
+func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, title string, switchBackend func(string) error) *chatModel {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ta := textarea.New()
-	ta.Placeholder = "type a task, ctrl+j for a new line, enter to send, ctrl+c to quit"
+	ta.Placeholder = "type a task or /models, /model, /backend · ctrl+j for a new line · ctrl+c quits"
 	ta.ShowLineNumbers = true
 	ta.Prompt = "› "
 	ta.MaxHeight = 5
@@ -110,16 +113,17 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header str
 	ta.SetStyles(styles)
 
 	return &chatModel{
-		ctx:      ctx,
-		cancel:   cancel,
-		agent:    a,
-		gate:     gate,
-		feed:     feed,
-		header:   header,
-		viewport: viewport.New(),
-		textarea: ta,
-		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(spinnerStyle)),
-		state:    chatReady,
+		ctx:           ctx,
+		cancel:        cancel,
+		agent:         a,
+		gate:          gate,
+		feed:          feed,
+		title:         title,
+		switchBackend: switchBackend,
+		viewport:      viewport.New(),
+		textarea:      ta,
+		spinner:       spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(spinnerStyle)),
+		state:         chatReady,
 	}
 }
 
@@ -127,11 +131,18 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header str
 // screen is requested by the View itself (v2 models declare terminal
 // state there); the transcript lives only as long as the session.
 // The feed receives the agent's tool calls, so the status line can
-// show which tool is in use.
-func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, header string) error {
+// show which tool is in use. switchBackend (may be nil) connects
+// the /backend command to the config-backed backend constructors.
+func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, title string, switchBackend func(string) error) error {
 	defer feed.Close()
-	_, err := tea.NewProgram(newChatModel(a, gate, feed, header)).Run()
+	_, err := tea.NewProgram(newChatModel(a, gate, feed, title, switchBackend)).Run()
 	return err
+}
+
+// headerText is the live session line: title plus the backend and
+// model the next request will use, so a mid-session switch shows.
+func (m *chatModel) headerText() string {
+	return fmt.Sprintf("%s · %s/%s", m.title, m.agent.BackendName(), m.agent.Model())
 }
 
 func (m *chatModel) Init() tea.Cmd {
@@ -170,6 +181,54 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendLine(answerStyle.Render(msg.res.Answer))
 		}
 		m.prompt, m.tool, m.state = "", ToolEvent{}, chatReady
+		return m, nil
+
+	case modelsDoneMsg:
+		// The listing from a /models or /backend command, or the
+		// validation behind a /model, arrived. One that raced a
+		// /backend switch describes a backend the session no
+		// longer uses: drop it, or a stale /model validation could
+		// set a name the new backend may not serve.
+		if msg.backend != m.agent.BackendName() {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
+			return m, nil
+		}
+		if msg.want != "" {
+			// Two /model commands against the same backend can
+			// have their listings finish out of order: apply
+			// only the newest generation, or an older listing
+			// landing last would override the operator's later
+			// choice.
+			if msg.seq != m.modelSeq {
+				return m, nil
+			}
+			if m.applyModel(msg.want, msg.names) {
+				// A real selection settles the model for this
+				// generation; a refusal or a busy deferral
+				// does not, and must leave the switch's
+				// fallback free to act.
+				m.appliedSeq = msg.seq
+			}
+			return m, nil
+		}
+		if len(msg.names) == 0 {
+			m.appendLine(dimStyle.Render("(the backend reported no models)"))
+			return m, nil
+		}
+		m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
+		// The switch's follow-up reconciles only when no newer
+		// /model actually selected a model: a command that was
+		// refused never decided anything, and suppressing the
+		// fallback then would leave the session on a model this
+		// backend does not serve. The names still print above -
+		// they are information, not a decision.
+		if msg.switched && msg.seq > m.appliedSeq {
+			m.reconcileModel(msg.names)
+			m.appliedSeq = msg.seq
+		}
 		return m, nil
 
 	case ApprovalRequest:
@@ -244,11 +303,16 @@ func shorten(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// submit starts one agent step for the entered prompt.
+// submit starts one agent step for the entered prompt. A line
+// starting with / is a REPL command instead and never reaches the
+// model.
 func (m *chatModel) submit() tea.Cmd {
 	prompt := strings.TrimSpace(m.textarea.Value())
 	if prompt == "" {
 		return nil
+	}
+	if strings.HasPrefix(prompt, "/") {
+		return m.command(prompt)
 	}
 	// Continuation lines are indented under the prompt sign.
 	m.appendLine(userStyle.Render("› " + strings.ReplaceAll(prompt, "\n", "\n  ")))
@@ -279,11 +343,173 @@ func (m *chatModel) appendLine(line string) {
 	m.viewport.GotoBottom()
 }
 
+// modelsDoneMsg carries the outcome of a model listing back to the
+// REPL; the listing runs as a Cmd so the UI never blocks on HTTP.
+// want names the model a /model command asked to validate and
+// switch to (empty for plain listings), seq is the generation of
+// the model-deciding command that armed it (0 for plain listings,
+// which only print), backend names the backend the listing ran
+// against so a result that raced a /backend switch is dropped,
+// and switched marks the listing a /backend switch armed to follow
+// up on its model.
+type modelsDoneMsg struct {
+	names    []string
+	want     string
+	seq      int
+	backend  string
+	switched bool
+	err      error
+}
+
+// listModels arms the listing Cmd against the current backend. The
+// backend is captured here, in the Update loop - not read inside
+// the Cmd - so a /backend switch racing the listing never writes
+// a.backend under it; the name tag on the msg lets Update drop a
+// listing that no longer describes the session's backend.
+func (m *chatModel) listModels(want string, seq int, switched bool) tea.Cmd {
+	b := m.agent.Backend()
+	name := b.Name()
+	return func() tea.Msg {
+		names, err := b.Models(m.ctx)
+		return modelsDoneMsg{names: names, want: want, seq: seq, backend: name, switched: switched, err: err}
+	}
+}
+
+// modelAvailable reports the listed name matching want, if any: an
+// exact match, or a tag variant of it - ollama accepts "llama3.2"
+// as shorthand for "llama3.2:latest". Callers set the returned
+// listed name, never the typed shorthand, so a request cannot fall
+// back to a tag the backend may not serve. Empty means not
+// available.
+func modelAvailable(want string, names []string) string {
+	for _, n := range names {
+		if n == want || strings.HasPrefix(n, want+":") {
+			return n
+		}
+	}
+	return ""
+}
+
+// applyModel settles a /model command whose validation listing came
+// back: switch when the backend offers the name (or a tag variant
+// of it, which is what gets set), otherwise say what is available.
+// It reports whether a model was selected - only a selection
+// suppresses a pending switch's fallback reconciliation. A step in
+// flight owns the agent - setting a.model mid-step would race the
+// running loop - so a listing that lands while busy is not applied.
+func (m *chatModel) applyModel(want string, names []string) bool {
+	if m.state != chatReady {
+		m.appendLine(errorStyle.Render("a step is running - model not changed, retry /model when idle"))
+		return false
+	}
+	match := modelAvailable(want, names)
+	if match == "" {
+		if len(names) == 0 {
+			m.appendLine(errorStyle.Render("no model " + want + " · the backend reported no models"))
+			return false
+		}
+		m.appendLine(errorStyle.Render("no model " + want + " · available: " + strings.Join(names, ", ")))
+		return false
+	}
+	m.agent.SetModel(match)
+	m.appendLine(dimStyle.Render("model set to " + match))
+	return true
+}
+
+// reconcileModel settles the model after the listing that follows
+// a /backend switch: the old model survives only if the new
+// backend serves it (or a tag variant of it, in which case the
+// listed variant is what gets set); otherwise the first listed
+// model takes over, so the next prompt works without a manual
+// /model. Like applyModel, it defers to a running step - the step
+// owns the agent's model.
+func (m *chatModel) reconcileModel(names []string) {
+	if m.state != chatReady {
+		m.appendLine(dimStyle.Render("(model left as " + m.agent.Model() + " - a step is running, /model once idle)"))
+		return
+	}
+	old := m.agent.Model()
+	match := modelAvailable(old, names)
+	if match != "" {
+		// Served, possibly only as a specific tag: send the listed
+		// name so the request does not fall back to a tag the
+		// backend may not have.
+		if match != old {
+			m.agent.SetModel(match)
+			m.appendLine(dimStyle.Render(old + " resolves to " + match + " here - model set to " + match))
+		}
+		return
+	}
+	m.agent.SetModel(names[0])
+	m.appendLine(dimStyle.Render(old + " is not served here - switched to " + names[0]))
+}
+
+// command runs one REPL slash command. Commands act on the live
+// session only - they never reach the model, so they skip the step
+// machinery entirely: no busy state, no approval gate, no history
+// changes. They are accepted only while idle, which submit's caller
+// guarantees (busy swallows keys).
+func (m *chatModel) command(line string) tea.Cmd {
+	m.appendLine(userStyle.Render("› " + strings.ReplaceAll(line, "\n", "\n  ")))
+	m.textarea.Reset()
+	m.layout()
+
+	name, rest, _ := strings.Cut(line, " ")
+	switch name {
+	case "/models":
+		m.appendLine(dimStyle.Render("asking " + m.agent.BackendName() + " for its models…"))
+		return m.listModels("", 0, false)
+
+	case "/model":
+		model := strings.TrimSpace(rest)
+		if model == "" {
+			m.appendLine(errorStyle.Render("usage: /model <name> · current: " + m.agent.Model()))
+			return nil
+		}
+		// Validate against the backend's listing before switching:
+		// a typo would otherwise only surface as a failed next
+		// step. The check runs as a Cmd so the UI never blocks,
+		// and carries a generation so an older listing that
+		// finishes after a newer /model cannot apply.
+		m.modelSeq++
+		m.appendLine(dimStyle.Render("checking " + model + " against " + m.agent.BackendName() + "'s models…"))
+		return m.listModels(model, m.modelSeq, false)
+
+	case "/backend":
+		target := strings.TrimSpace(rest)
+		if target == "" {
+			m.appendLine(errorStyle.Render("usage: /backend <ollama|llamacpp> · current: " + m.agent.BackendName()))
+			return nil
+		}
+		if m.switchBackend == nil {
+			m.appendLine(errorStyle.Render("backend switching is not wired up in this session"))
+			return nil
+		}
+		if err := m.switchBackend(target); err != nil {
+			m.appendLine(errorStyle.Render("error: " + err.Error()))
+			return nil
+		}
+		// The old model almost certainly does not exist on the
+		// new backend; list what does, and let the listing's
+		// follow-up (reconcileModel) keep or replace the model.
+		// The switch is a model-deciding command like /model, so
+		// it takes a generation: a /model issued while the
+		// listing is in flight supersedes the reconciliation.
+		m.modelSeq++
+		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
+		return m.listModels("", m.modelSeq, true)
+
+	default:
+		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))
+		return nil
+	}
+}
+
 // layout recomputes the viewport height from the window size and the
 // current input area height.
 func (m *chatModel) layout() {
 	input := lipgloss.Height(m.textarea.View())
-	h := m.height - lipgloss.Height(m.header) - input - 4
+	h := m.height - lipgloss.Height(m.headerText()) - input - 4
 	if h < 1 {
 		h = 1
 	}
@@ -292,7 +518,7 @@ func (m *chatModel) layout() {
 
 func (m *chatModel) View() tea.View {
 	var sb strings.Builder
-	sb.WriteString(m.header)
+	sb.WriteString(m.headerText())
 	sb.WriteString("\n")
 	sb.WriteString(m.viewport.View())
 	sb.WriteString("\n")

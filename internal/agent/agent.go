@@ -163,6 +163,30 @@ func New(b backend.Backend, model, system string, tools []Tool, opts ...Option) 
 	return a
 }
 
+// SetModel switches the model used for the next and all following
+// requests. The model travels per request, so a switch applies
+// mid-conversation without rebuilding anything; the history stays
+// valid. Not safe to call while a Run or Step is in flight.
+func (a *Agent) SetModel(model string) { a.model = model }
+
+// Model returns the model used for the next request.
+func (a *Agent) Model() string { return a.model }
+
+// SetBackend swaps the inference backend under a live conversation.
+// Messages are backend-agnostic, so the history carries over; the
+// model may not exist on the new backend - switch it too (see
+// Models). Not safe to call while a Run or Step is in flight.
+func (a *Agent) SetBackend(b backend.Backend) { a.backend = b }
+
+// BackendName names the current backend, for display.
+func (a *Agent) BackendName() string { return a.backend.Name() }
+
+// Backend returns the current backend. Callers that outlive the
+// moment - a chat listing Cmd running in its own goroutine -
+// capture it now so a concurrent SetBackend cannot race them, and
+// compare Backend().Name() later to spot results gone stale.
+func (a *Agent) Backend() backend.Backend { return a.backend }
+
 // RunResult captures the outcome of a single Run: the final answer,
 // how many backend round trips it took, and the full conversation
 // history for review.

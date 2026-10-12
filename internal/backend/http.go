@@ -69,6 +69,34 @@ func PostJSON(ctx context.Context, client *http.Client, base, path string, paylo
 	return nil
 }
 
+// GetJSON performs the read-only half of the adapter round trip: GET
+// base+path and decode the JSON response into out. Status and error
+// handling mirror PostJSON so listing models fails the same way
+// chatting does.
+func GetJSON(ctx context.Context, client *http.Client, base, path string, out any) error {
+	url := strings.TrimSuffix(base, "/") + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("status %s: %s", resp.Status, serverMessage(resp.Body))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
 // serverMessage extracts the server's own error text from a failed
 // response: a JSON body shaped {"error":"..."} (the ollama
 // convention) or {"error":{"message":"..."}} (the OpenAI convention

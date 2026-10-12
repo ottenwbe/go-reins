@@ -19,6 +19,9 @@ func (f *stubBackend) Name() string { return "stub" }
 func (f *stubBackend) Chat(context.Context, backend.ChatRequest) (backend.ChatResponse, error) {
 	return backend.ChatResponse{Content: f.reply}, nil
 }
+func (f *stubBackend) Models(context.Context) ([]string, error) {
+	return []string{"stub-model"}, nil
+}
 
 func TestRunTaskCompletesHeadless(t *testing.T) {
 	gate := NewApprovalGate()

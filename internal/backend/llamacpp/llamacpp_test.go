@@ -51,6 +51,33 @@ func TestNewRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+// TestModelsListsV1Models verifies the /models listing: a GET to the
+// OpenAI-style /v1/models endpoint, ids in the server's own order.
+func TestModelsListsV1Models(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen2.5-coder-7b"},{"id":"llama3.2"}]}`))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	names, err := l.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(names) != 2 || names[0] != "qwen2.5-coder-7b" || names[1] != "llama3.2" {
+		t.Errorf("names = %v, want [qwen2.5-coder-7b llama3.2]", names)
+	}
+}
+
 func TestChatCarriesServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

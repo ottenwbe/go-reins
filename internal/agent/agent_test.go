@@ -21,6 +21,10 @@ type fakeBackend struct {
 
 func (f *fakeBackend) Name() string { return "fake" }
 
+func (f *fakeBackend) Models(context.Context) ([]string, error) {
+	return []string{"fake-1", "fake-2"}, nil
+}
+
 func (f *fakeBackend) Chat(_ context.Context, req backend.ChatRequest) (backend.ChatResponse, error) {
 	f.calls = append(f.calls, req)
 	if len(f.replies) > 0 {
