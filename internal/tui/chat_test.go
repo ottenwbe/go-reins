@@ -594,6 +594,51 @@ func TestChatSwitchListingSupersededByModelCommand(t *testing.T) {
 	}
 }
 
+// TestChatRejectedModelKeepsSwitchFallback pins the review
+// follow-up: a /model that is refused never decides the model, so
+// it must not suppress the pending switch's fallback - the
+// reconciliation still runs, and the session is not left on a
+// model the new backend does not serve.
+func TestChatRejectedModelKeepsSwitchFallback(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	a := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
+	target := &switchStub{name: "llamacpp", models: []string{"qwen2.5"}}
+	m := startChat(a, gate, func(string) error {
+		a.SetBackend(target)
+		return nil
+	})
+
+	// The switch arms its listing; the operator's /model while it
+	// is in flight is refused.
+	m, sw := runCommand(m, "/backend llamacpp")
+	if sw == nil {
+		t.Fatal("/backend armed no listing Cmd")
+	}
+	m, val := runCommand(m, "/model nope")
+	if val == nil {
+		t.Fatal("/model armed no validation Cmd")
+	}
+	next, _ := m.Update(val())
+	m = next.(*chatModel)
+	if a.Model() != "m" {
+		t.Fatalf("refused validation changed model to %q, want m", a.Model())
+	}
+
+	// The switch's listing lands: the fallback must still run -
+	// "m" is not served by llamacpp, and no real selection ever
+	// happened to settle the model.
+	next, _ = m.Update(sw())
+	m = next.(*chatModel)
+	if a.Model() != "qwen2.5" {
+		t.Errorf("fallback suppressed by a refused /model: model = %q, want qwen2.5", a.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "m is not served here - switched to qwen2.5") {
+		t.Errorf("fallback note missing: %v", m.lines)
+	}
+}
+
 // TestChatModelsCommand covers /models: the listing runs as a Cmd
 // and its result lands in the transcript; errors and empty lists
 // are reported instead of swallowed.

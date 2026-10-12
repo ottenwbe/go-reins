@@ -40,18 +40,19 @@ type chatModel struct {
 	switchBackend func(name string) error // wires /backend to session.NewBackend
 	prompt        string                  // prompt of the running step, for the status line
 
-	history  []backend.Message
-	lines    []string
-	viewport viewport.Model
-	textarea textarea.Model
-	spinner  spinner.Model
-	state    chatState
-	approval *ApprovalRequest
-	tool     ToolEvent // tool of the running step, for the status line
-	step     *stepScope
-	modelSeq int // generation of the newest model-deciding command (/model, /backend); older results are dropped
-	width    int
-	height   int
+	history    []backend.Message
+	lines      []string
+	viewport   viewport.Model
+	textarea   textarea.Model
+	spinner    spinner.Model
+	state      chatState
+	approval   *ApprovalRequest
+	tool       ToolEvent // tool of the running step, for the status line
+	step       *stepScope
+	modelSeq   int // generation of the newest model-deciding command (/model, /backend); older results are dropped
+	appliedSeq int // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	width      int
+	height     int
 }
 
 // stepScope bounds the waiter Cmds armed for one agent step. When
@@ -204,7 +205,13 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.seq != m.modelSeq {
 				return m, nil
 			}
-			m.applyModel(msg.want, msg.names)
+			if m.applyModel(msg.want, msg.names) {
+				// A real selection settles the model for this
+				// generation; a refusal or a busy deferral
+				// does not, and must leave the switch's
+				// fallback free to act.
+				m.appliedSeq = msg.seq
+			}
 			return m, nil
 		}
 		if len(msg.names) == 0 {
@@ -212,14 +219,15 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
-		// The switch's follow-up reconciles only while it is
-		// still the newest model-deciding command: a /model
-		// issued while the listing was in flight already picked
-		// a model, and the reconciliation must not override
-		// that choice. The names still print above - they are
-		// information, not a decision.
-		if msg.switched && msg.seq == m.modelSeq {
+		// The switch's follow-up reconciles only when no newer
+		// /model actually selected a model: a command that was
+		// refused never decided anything, and suppressing the
+		// fallback then would leave the session on a model this
+		// backend does not serve. The names still print above -
+		// they are information, not a decision.
+		if msg.switched && msg.seq > m.appliedSeq {
 			m.reconcileModel(msg.names)
+			m.appliedSeq = msg.seq
 		}
 		return m, nil
 
@@ -385,25 +393,27 @@ func modelAvailable(want string, names []string) string {
 // applyModel settles a /model command whose validation listing came
 // back: switch when the backend offers the name (or a tag variant
 // of it, which is what gets set), otherwise say what is available.
-// A step in flight owns the agent - setting a.model mid-step would
-// race the running loop - so a listing that lands while busy is
-// not applied.
-func (m *chatModel) applyModel(want string, names []string) {
+// It reports whether a model was selected - only a selection
+// suppresses a pending switch's fallback reconciliation. A step in
+// flight owns the agent - setting a.model mid-step would race the
+// running loop - so a listing that lands while busy is not applied.
+func (m *chatModel) applyModel(want string, names []string) bool {
 	if m.state != chatReady {
 		m.appendLine(errorStyle.Render("a step is running - model not changed, retry /model when idle"))
-		return
+		return false
 	}
 	match := modelAvailable(want, names)
 	if match == "" {
 		if len(names) == 0 {
 			m.appendLine(errorStyle.Render("no model " + want + " · the backend reported no models"))
-			return
+			return false
 		}
 		m.appendLine(errorStyle.Render("no model " + want + " · available: " + strings.Join(names, ", ")))
-		return
+		return false
 	}
 	m.agent.SetModel(match)
 	m.appendLine(dimStyle.Render("model set to " + match))
+	return true
 }
 
 // reconcileModel settles the model after the listing that follows
