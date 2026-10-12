@@ -80,9 +80,9 @@ are backend-agnostic — and lists the new backend's models right
 after; when the new backend does not serve the current model, the
 first listed one is selected automatically, so the next prompt just
 works. `/model` checks the name against that listing before
-switching (ollama tag shorthand like `llama3.2` for `llama3.2:latest`
-counts); a name the backend does not offer is refused with what is
-available. A configured `--url` belongs to the startup backend —
+switching (ollama tag shorthand counts — asking for `llama3.2`
+selects the listed `llama3.2:…` variant); a name the backend does
+not offer is refused with what is available. A configured `--url` belongs to the startup backend —
 after a `/backend` switch the new backend uses its own default URL,
 and switching back restores the configured one.
 

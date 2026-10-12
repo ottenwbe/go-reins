@@ -49,6 +49,7 @@ type chatModel struct {
 	approval *ApprovalRequest
 	tool     ToolEvent // tool of the running step, for the status line
 	step     *stepScope
+	modelSeq int // generation of the newest armed /model validation; older results are dropped
 	width    int
 	height   int
 }
@@ -195,6 +196,14 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.want != "" {
+			// Two /model commands against the same backend can
+			// have their listings finish out of order: apply
+			// only the newest generation, or an older listing
+			// landing last would override the operator's later
+			// choice.
+			if msg.seq != m.modelSeq {
+				return m, nil
+			}
 			m.applyModel(msg.want, msg.names)
 			return m, nil
 		}
@@ -323,13 +332,16 @@ func (m *chatModel) appendLine(line string) {
 // modelsDoneMsg carries the outcome of a model listing back to the
 // REPL; the listing runs as a Cmd so the UI never blocks on HTTP.
 // want names the model a /model command asked to validate and
-// switch to (empty for plain listings), backend names the backend
-// the listing ran against so a result that raced a /backend switch
-// is recognizable and dropped, and switched marks the listing a
-// /backend switch armed to follow up on its model.
+// switch to (empty for plain listings), seq is that command's
+// generation so a listing that finished after a newer /model is
+// dropped, backend names the backend the listing ran against so a
+// result that raced a /backend switch is dropped too, and switched
+// marks the listing a /backend switch armed to follow up on its
+// model.
 type modelsDoneMsg struct {
 	names    []string
 	want     string
+	seq      int
 	backend  string
 	switched bool
 	err      error
@@ -340,18 +352,21 @@ type modelsDoneMsg struct {
 // the Cmd - so a /backend switch racing the listing never writes
 // a.backend under it; the name tag on the msg lets Update drop a
 // listing that no longer describes the session's backend.
-func (m *chatModel) listModels(want string, switched bool) tea.Cmd {
+func (m *chatModel) listModels(want string, seq int, switched bool) tea.Cmd {
 	b := m.agent.Backend()
 	name := b.Name()
 	return func() tea.Msg {
 		names, err := b.Models(m.ctx)
-		return modelsDoneMsg{names: names, want: want, backend: name, switched: switched, err: err}
+		return modelsDoneMsg{names: names, want: want, seq: seq, backend: name, switched: switched, err: err}
 	}
 }
 
 // modelAvailable reports the listed name matching want, if any: an
 // exact match, or a tag variant of it - ollama accepts "llama3.2"
-// as shorthand for "llama3.2:latest". Empty means not available.
+// as shorthand for "llama3.2:latest". Callers set the returned
+// listed name, never the typed shorthand, so a request cannot fall
+// back to a tag the backend may not serve. Empty means not
+// available.
 func modelAvailable(want string, names []string) string {
 	for _, n := range names {
 		if n == want || strings.HasPrefix(n, want+":") {
@@ -363,15 +378,17 @@ func modelAvailable(want string, names []string) string {
 
 // applyModel settles a /model command whose validation listing came
 // back: switch when the backend offers the name (or a tag variant
-// of it), otherwise say what is available. A step in flight owns
-// the agent - setting a.model mid-step would race the running
-// loop - so a listing that lands while busy is not applied.
+// of it, which is what gets set), otherwise say what is available.
+// A step in flight owns the agent - setting a.model mid-step would
+// race the running loop - so a listing that lands while busy is
+// not applied.
 func (m *chatModel) applyModel(want string, names []string) {
 	if m.state != chatReady {
 		m.appendLine(errorStyle.Render("a step is running - model not changed, retry /model when idle"))
 		return
 	}
-	if modelAvailable(want, names) == "" {
+	match := modelAvailable(want, names)
+	if match == "" {
 		if len(names) == 0 {
 			m.appendLine(errorStyle.Render("no model " + want + " · the backend reported no models"))
 			return
@@ -379,23 +396,32 @@ func (m *chatModel) applyModel(want string, names []string) {
 		m.appendLine(errorStyle.Render("no model " + want + " · available: " + strings.Join(names, ", ")))
 		return
 	}
-	m.agent.SetModel(want)
-	m.appendLine(dimStyle.Render("model set to " + want))
+	m.agent.SetModel(match)
+	m.appendLine(dimStyle.Render("model set to " + match))
 }
 
 // reconcileModel settles the model after the listing that follows
 // a /backend switch: the old model survives only if the new
-// backend serves it (or a tag variant of it); otherwise the first
-// listed model takes over, so the next prompt works without a
-// manual /model. Like applyModel, it defers to a running step -
-// the step owns the agent's model.
+// backend serves it (or a tag variant of it, in which case the
+// listed variant is what gets set); otherwise the first listed
+// model takes over, so the next prompt works without a manual
+// /model. Like applyModel, it defers to a running step - the step
+// owns the agent's model.
 func (m *chatModel) reconcileModel(names []string) {
 	if m.state != chatReady {
 		m.appendLine(dimStyle.Render("(model left as " + m.agent.Model() + " - a step is running, /model once idle)"))
 		return
 	}
 	old := m.agent.Model()
-	if modelAvailable(old, names) != "" {
+	match := modelAvailable(old, names)
+	if match != "" {
+		// Served, possibly only as a specific tag: send the listed
+		// name so the request does not fall back to a tag the
+		// backend may not have.
+		if match != old {
+			m.agent.SetModel(match)
+			m.appendLine(dimStyle.Render(old + " resolves to " + match + " here - model set to " + match))
+		}
 		return
 	}
 	m.agent.SetModel(names[0])
@@ -416,7 +442,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 	switch name {
 	case "/models":
 		m.appendLine(dimStyle.Render("asking " + m.agent.BackendName() + " for its models…"))
-		return m.listModels("", false)
+		return m.listModels("", 0, false)
 
 	case "/model":
 		model := strings.TrimSpace(rest)
@@ -426,9 +452,12 @@ func (m *chatModel) command(line string) tea.Cmd {
 		}
 		// Validate against the backend's listing before switching:
 		// a typo would otherwise only surface as a failed next
-		// step. The check runs as a Cmd so the UI never blocks.
+		// step. The check runs as a Cmd so the UI never blocks,
+		// and carries a generation so an older listing that
+		// finishes after a newer /model cannot apply.
+		m.modelSeq++
 		m.appendLine(dimStyle.Render("checking " + model + " against " + m.agent.BackendName() + "'s models…"))
-		return m.listModels(model, false)
+		return m.listModels(model, m.modelSeq, false)
 
 	case "/backend":
 		target := strings.TrimSpace(rest)
@@ -448,7 +477,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 		// new backend; list what does, and let the listing's
 		// follow-up (reconcileModel) keep or replace the model.
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
-		return m.listModels("", true)
+		return m.listModels("", 0, true)
 
 	default:
 		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))

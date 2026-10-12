@@ -246,21 +246,22 @@ func TestChatModelCommand(t *testing.T) {
 	}
 
 	// /model with a name: the switch is validated against the
-	// backend's listing, then the agent switches and the live
-	// header shows the new model.
+	// backend's listing, then the agent switches - to the listed
+	// variant, not the typed shorthand - and the live header
+	// shows the new model.
 	m, cmd = runCommand(m, "/model llama3.2")
 	if cmd == nil {
 		t.Fatal("/model <name> armed no validation Cmd")
 	}
 	next, _ := m.Update(cmd())
 	m = next.(*chatModel)
-	if a.Model() != "llama3.2" {
-		t.Errorf("agent model = %q, want llama3.2", a.Model())
+	if a.Model() != "llama3.2:latest" {
+		t.Errorf("agent model = %q, want llama3.2:latest (the listed match)", a.Model())
 	}
-	if !strings.Contains(m.View().Content, "go-reins chat · stub/llama3.2") {
+	if !strings.Contains(m.View().Content, "go-reins chat · stub/llama3.2:latest") {
 		t.Errorf("header missing model switch: %q", m.headerText())
 	}
-	if !strings.Contains(strings.Join(m.lines, "\n"), "model set to llama3.2") {
+	if !strings.Contains(strings.Join(m.lines, "\n"), "model set to llama3.2:latest") {
 		t.Errorf("confirmation line missing: %v", m.lines)
 	}
 	if m.state != chatReady {
@@ -301,15 +302,15 @@ func TestChatModelCommandValidation(t *testing.T) {
 		t.Errorf("refusal line wrong: %v", m.lines)
 	}
 
-	// Accepted via tag shorthand: ollama resolves "llama3.2" to
-	// "llama3.2:latest".
+	// Accepted via tag shorthand: ollama resolves "llama3.2", and
+	// the listed variant is what gets set.
 	sh := agent.New(&switchStub{name: "stub", models: []string{"llama3.2:latest"}}, "m", "sys", nil)
 	m = startChat(sh, gate, nil)
 	m, cmd = runCommand(m, "/model llama3.2")
 	next, _ = m.Update(cmd())
 	m = next.(*chatModel)
-	if sh.Model() != "llama3.2" {
-		t.Errorf("model after shorthand switch = %q, want llama3.2", sh.Model())
+	if sh.Model() != "llama3.2:latest" {
+		t.Errorf("model after shorthand switch = %q, want llama3.2:latest (the listed match)", sh.Model())
 	}
 
 	// A failed listing changes nothing.
@@ -443,13 +444,18 @@ func TestChatBackendSwitchModelReconcile(t *testing.T) {
 		t.Errorf("served model prompted a switch note: %v", m.lines)
 	}
 
-	// Served via tag shorthand: survives too.
+	// Served via tag shorthand: survives, normalized to the listed
+	// variant so the request cannot fall back to a tag the
+	// backend does not serve.
 	sh := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
 	m, cmd = switchTo(sh, &switchStub{name: "llamacpp", models: []string{"m:latest"}})
 	next, _ = m.Update(cmd())
 	m = next.(*chatModel)
-	if sh.Model() != "m" {
-		t.Errorf("shorthand-served model replaced: %q, want m", sh.Model())
+	if sh.Model() != "m:latest" {
+		t.Errorf("shorthand-served model = %q, want m:latest (the listed match)", sh.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "resolves to m:latest here") {
+		t.Errorf("normalization note missing: %v", m.lines)
 	}
 
 	// Not served: the first listed model takes over, with a note.
@@ -493,6 +499,46 @@ func TestChatBackendSwitchModelReconcile(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(m.lines, "\n"), "no models") {
 		t.Errorf("empty listing not reported: %v", m.lines)
+	}
+}
+
+// TestChatModelValidationOutOfOrder pins the generation guard: two
+// /model commands against the same backend can have their listings
+// finish in either order, but only the newest command may apply -
+// an older listing landing last must not override the operator's
+// later choice.
+func TestChatModelValidationOutOfOrder(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	a := agent.New(&switchStub{name: "stub", models: []string{"a", "b"}}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	m, older := runCommand(m, "/model a")
+	if older == nil {
+		t.Fatal("first /model armed no Cmd")
+	}
+	m, newer := runCommand(m, "/model b")
+	if newer == nil {
+		t.Fatal("second /model armed no Cmd")
+	}
+
+	// The newer command's listing lands first and applies.
+	next, _ := m.Update(newer())
+	m = next.(*chatModel)
+	if a.Model() != "b" {
+		t.Fatalf("model after newer validation = %q, want b", a.Model())
+	}
+
+	// The older listing lands last: superseded, dropped, and the
+	// model stays what the newest command chose.
+	next, _ = m.Update(older())
+	m = next.(*chatModel)
+	if a.Model() != "b" {
+		t.Errorf("superseded validation applied: model = %q, want b", a.Model())
+	}
+	if strings.Contains(strings.Join(m.lines, "\n"), "model set to a") {
+		t.Errorf("superseded confirmation in transcript: %v", m.lines)
 	}
 }
 
