@@ -203,6 +203,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
+		if msg.switched {
+			m.reconcileModel(msg.names)
+		}
 		return m, nil
 
 	case ApprovalRequest:
@@ -320,14 +323,16 @@ func (m *chatModel) appendLine(line string) {
 // modelsDoneMsg carries the outcome of a model listing back to the
 // REPL; the listing runs as a Cmd so the UI never blocks on HTTP.
 // want names the model a /model command asked to validate and
-// switch to (empty for plain /models and /backend listings), and
-// backend names the backend the listing ran against, so a result
-// that raced a /backend switch is recognizable and dropped.
+// switch to (empty for plain listings), backend names the backend
+// the listing ran against so a result that raced a /backend switch
+// is recognizable and dropped, and switched marks the listing a
+// /backend switch armed to follow up on its model.
 type modelsDoneMsg struct {
-	names   []string
-	want    string
-	backend string
-	err     error
+	names    []string
+	want     string
+	backend  string
+	switched bool
+	err      error
 }
 
 // listModels arms the listing Cmd against the current backend. The
@@ -335,12 +340,12 @@ type modelsDoneMsg struct {
 // the Cmd - so a /backend switch racing the listing never writes
 // a.backend under it; the name tag on the msg lets Update drop a
 // listing that no longer describes the session's backend.
-func (m *chatModel) listModels(want string) tea.Cmd {
+func (m *chatModel) listModels(want string, switched bool) tea.Cmd {
 	b := m.agent.Backend()
 	name := b.Name()
 	return func() tea.Msg {
 		names, err := b.Models(m.ctx)
-		return modelsDoneMsg{names: names, want: want, backend: name, err: err}
+		return modelsDoneMsg{names: names, want: want, backend: name, switched: switched, err: err}
 	}
 }
 
@@ -378,6 +383,25 @@ func (m *chatModel) applyModel(want string, names []string) {
 	m.appendLine(dimStyle.Render("model set to " + want))
 }
 
+// reconcileModel settles the model after the listing that follows
+// a /backend switch: the old model survives only if the new
+// backend serves it (or a tag variant of it); otherwise the first
+// listed model takes over, so the next prompt works without a
+// manual /model. Like applyModel, it defers to a running step -
+// the step owns the agent's model.
+func (m *chatModel) reconcileModel(names []string) {
+	if m.state != chatReady {
+		m.appendLine(dimStyle.Render("(model left as " + m.agent.Model() + " - a step is running, /model once idle)"))
+		return
+	}
+	old := m.agent.Model()
+	if modelAvailable(old, names) != "" {
+		return
+	}
+	m.agent.SetModel(names[0])
+	m.appendLine(dimStyle.Render(old + " is not served here - switched to " + names[0]))
+}
+
 // command runs one REPL slash command. Commands act on the live
 // session only - they never reach the model, so they skip the step
 // machinery entirely: no busy state, no approval gate, no history
@@ -392,7 +416,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 	switch name {
 	case "/models":
 		m.appendLine(dimStyle.Render("asking " + m.agent.BackendName() + " for its models…"))
-		return m.listModels("")
+		return m.listModels("", false)
 
 	case "/model":
 		model := strings.TrimSpace(rest)
@@ -404,7 +428,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 		// a typo would otherwise only surface as a failed next
 		// step. The check runs as a Cmd so the UI never blocks.
 		m.appendLine(dimStyle.Render("checking " + model + " against " + m.agent.BackendName() + "'s models…"))
-		return m.listModels(model)
+		return m.listModels(model, false)
 
 	case "/backend":
 		target := strings.TrimSpace(rest)
@@ -421,10 +445,10 @@ func (m *chatModel) command(line string) tea.Cmd {
 			return nil
 		}
 		// The old model almost certainly does not exist on the
-		// new backend; list what does, so the next step is one
-		// /model away.
+		// new backend; list what does, and let the listing's
+		// follow-up (reconcileModel) keep or replace the model.
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
-		return m.listModels("")
+		return m.listModels("", true)
 
 	default:
 		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))

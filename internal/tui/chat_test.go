@@ -403,6 +403,97 @@ func TestChatStaleListingDroppedAfterBackendSwitch(t *testing.T) {
 	if !strings.Contains(strings.Join(m.lines, "\n"), "qwen2.5") {
 		t.Errorf("fresh listing missing from transcript: %v", m.lines)
 	}
+	// The fresh listing also reconciles: the old model is not
+	// served by the new backend, so the first listed one takes
+	// over - the stale drop must not leave the model dangling.
+	if a.Model() != "qwen2.5" {
+		t.Errorf("model after fresh listing = %q, want qwen2.5", a.Model())
+	}
+}
+
+// TestChatBackendSwitchModelReconcile pins the post-switch model
+// follow-up: a model the new backend serves survives the switch
+// (tag shorthand included), an unserved model is replaced by the
+// first listed one, a step in flight defers the decision with a
+// hint instead of racing it, and an empty listing changes nothing.
+func TestChatBackendSwitchModelReconcile(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+
+	// switchTo builds a session whose /backend always swaps to the
+	// given stub, and returns the model with the switch's listing
+	// Cmd armed.
+	switchTo := func(a *agent.Agent, target *switchStub) (*chatModel, tea.Cmd) {
+		m := startChat(a, gate, func(string) error {
+			a.SetBackend(target)
+			return nil
+		})
+		return runCommand(m, "/backend llamacpp")
+	}
+
+	// Served exactly: the model survives without a word.
+	a := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
+	m, cmd := switchTo(a, &switchStub{name: "llamacpp", models: []string{"m", "other"}})
+	next, _ := m.Update(cmd())
+	m = next.(*chatModel)
+	if a.Model() != "m" {
+		t.Errorf("served model replaced: %q, want m", a.Model())
+	}
+	if strings.Contains(strings.Join(m.lines, "\n"), "is not served here") {
+		t.Errorf("served model prompted a switch note: %v", m.lines)
+	}
+
+	// Served via tag shorthand: survives too.
+	sh := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
+	m, cmd = switchTo(sh, &switchStub{name: "llamacpp", models: []string{"m:latest"}})
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if sh.Model() != "m" {
+		t.Errorf("shorthand-served model replaced: %q, want m", sh.Model())
+	}
+
+	// Not served: the first listed model takes over, with a note.
+	fresh := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
+	m, cmd = switchTo(fresh, &switchStub{name: "llamacpp", models: []string{"qwen2.5", "llama3.2"}})
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if fresh.Model() != "qwen2.5" {
+		t.Errorf("unserved model kept: %q, want qwen2.5 (first listed)", fresh.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "m is not served here - switched to qwen2.5") {
+		t.Errorf("switch note missing: %v", m.lines)
+	}
+
+	// A step in flight defers the decision instead of racing it.
+	busy := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	m, cmd = switchTo(busy, &switchStub{name: "llamacpp", models: []string{"qwen2.5"}})
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	if m.state != chatBusy {
+		t.Fatalf("state after submit = %v, want chatBusy", m.state)
+	}
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if busy.Model() != "m" {
+		t.Errorf("model changed while busy: %q, want m", busy.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "/model once idle") {
+		t.Errorf("deferred-switch hint missing: %v", m.lines)
+	}
+
+	// An empty listing leaves the model alone - nothing to pick.
+	none := agent.New(&switchStub{name: "ollama"}, "m", "sys", nil)
+	m, cmd = switchTo(none, &switchStub{name: "llamacpp"})
+	next, _ = m.Update(cmd())
+	m = next.(*chatModel)
+	if none.Model() != "m" {
+		t.Errorf("model changed on empty listing: %q, want m", none.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "no models") {
+		t.Errorf("empty listing not reported: %v", m.lines)
+	}
 }
 
 // TestChatModelsCommand covers /models: the listing runs as a Cmd
@@ -519,6 +610,14 @@ func TestChatBackendCommand(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(m.lines, "\n"), "qwen2.5") {
 		t.Errorf("listing after switch missing: %v", m.lines)
+	}
+	// The old model is not served by the new backend, so the
+	// follow-up picks the first listed one automatically.
+	if a.Model() != "qwen2.5" {
+		t.Errorf("model after switch = %q, want qwen2.5 (first listed)", a.Model())
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "switched to qwen2.5") {
+		t.Errorf("model follow-up note missing: %v", m.lines)
 	}
 
 	// A failing switch reports the error, arms nothing, and leaves
