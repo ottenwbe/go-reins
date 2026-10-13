@@ -57,24 +57,29 @@ func (f *StreamFeed) Observer() agent.StreamObserver {
 // WaitOn is a tea.Cmd that blocks until new text has arrived (or
 // the feed or the step ends) and delivers it as one StreamEvent.
 // done cancels the wait, so it can be scoped to one agent step
-// like the gate and tool feed waits.
+// like the gate and tool feed waits. A notification whose text was
+// already drained by the previous wait makes the loop go around
+// again instead of ending the chain - a dead chain would leave a
+// stale notification and undelivered text behind for the next step
+// to misattribute.
 func (f *StreamFeed) WaitOn(done <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case <-f.notify:
-		case <-f.done:
-			return nil
-		case <-done:
-			return nil
+		for {
+			select {
+			case <-f.notify:
+			case <-f.done:
+				return nil
+			case <-done:
+				return nil
+			}
+			f.mu.Lock()
+			chunk := f.pending.String()
+			f.pending.Reset()
+			f.mu.Unlock()
+			if chunk != "" {
+				return StreamEvent{Delta: chunk}
+			}
 		}
-		f.mu.Lock()
-		chunk := f.pending.String()
-		f.pending.Reset()
-		f.mu.Unlock()
-		if chunk == "" {
-			return nil // raced a drain: nothing new to show
-		}
-		return StreamEvent{Delta: chunk}
 	}
 }
 

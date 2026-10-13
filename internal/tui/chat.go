@@ -181,13 +181,14 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StreamEvent:
 		// A delta from a step that already ended is noise: drop it
 		// instead of reviving the transcript and arming a new
-		// waiter while idle.
-		if m.state != chatBusy {
+		// waiter while idle. A delta while the operator decides a
+		// tool call belongs to the running step - prose the model
+		// streamed before the call - so it keeps the forming line
+		// growing and the waiter armed; dropping it there would
+		// kill the wait chain and freeze the rest of the reply.
+		if m.state != chatBusy && m.state != chatApproving {
 			return m, nil
 		}
-		// The reply is forming: grow the live text, rerender the
-		// transcript so the answer grows in place, and keep
-		// listening for more.
 		m.live = appendLive(m.live, msg.Delta)
 		m.refreshTranscript()
 		return m, m.stream.WaitOn(m.step.done)
@@ -397,11 +398,12 @@ func (m *chatModel) appendLine(line string) {
 
 // refreshTranscript renders the transcript into the viewport: the
 // finished lines, plus - while a step is streaming - the forming
-// reply as one more line at the bottom. The step result replaces it
-// wholesale, so the completed answer never doubles up.
+// reply as one more line at the bottom, approval dialog included.
+// The step result replaces it wholesale, so the completed answer
+// never doubles up; live is empty whenever no step is running.
 func (m *chatModel) refreshTranscript() {
 	content := strings.Join(m.lines, "\n")
-	if m.state == chatBusy && m.live != "" {
+	if m.live != "" {
 		content += "\n" + answerStyle.Render(m.live)
 	}
 	m.viewport.SetContent(content)

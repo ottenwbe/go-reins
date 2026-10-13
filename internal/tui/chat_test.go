@@ -856,3 +856,69 @@ func TestChatStreamsIntoTranscript(t *testing.T) {
 		t.Error("stale delta reached the transcript")
 	}
 }
+
+// TestChatStreamsAcrossApproval verifies that deltas arriving while
+// the operator decides a tool call keep the forming line growing
+// and the wait chain armed: prose the model streamed before the
+// call must neither freeze the rest of the reply nor leak into the
+// next prompt's stream.
+func TestChatStreamsAcrossApproval(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	stream := NewStreamFeed()
+	defer stream.Close()
+	reply := make(chan bool, 1)
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil,
+		agent.WithApprover(func(tool, args string) bool {
+			return <-reply
+		}))
+	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m.Init()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+
+	// A tool call needs approval; the state leaves chatBusy.
+	next, _ = m.Update(ApprovalRequest{Tool: "read", Args: "{}", Reply: reply})
+	m = next.(*chatModel)
+	if m.state != chatApproving {
+		t.Fatalf("state after approval request = %v, want chatApproving", m.state)
+	}
+
+	// Prose streamed before the call arrives while approving: it
+	// must reach the transcript, and the waiter must stay armed.
+	next, _ = m.Update(StreamEvent{Delta: "before "})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "before ") {
+		t.Errorf("delta during approval missing from transcript: %q", m.View().Content)
+	}
+	next, cmd := m.Update(StreamEvent{Delta: "the call"})
+	m = next.(*chatModel)
+	if cmd == nil {
+		t.Fatal("stream waiter not re-armed during approval")
+	}
+	if !strings.Contains(m.View().Content, "before the call") {
+		t.Errorf("deltas during approval not accumulated: %q", m.View().Content)
+	}
+
+	// The operator allows: the step keeps going and more deltas
+	// still land.
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'y'})
+	m = next.(*chatModel)
+	next, _ = m.Update(StreamEvent{Delta: " after"})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "before the call after") {
+		t.Errorf("delta after approval missing: %q", m.View().Content)
+	}
+
+	// The step ends: the final answer replaces the forming line.
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "ok"}})
+	m = next.(*chatModel)
+	if got := strings.Count(m.View().Content, "ok"); got != 1 {
+		t.Errorf("final answer appears %d times, want 1", got)
+	}
+}
