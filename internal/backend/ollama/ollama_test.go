@@ -23,10 +23,12 @@ func TestChatPostsToAPIChat(t *testing.T) {
 		if req["model"] != "llama3.2" {
 			t.Errorf("model = %v, want llama3.2", req["model"])
 		}
-		if req["stream"] != false {
-			t.Errorf("stream = %v, want false", req["stream"])
+		// Chat delegates to ChatStream, so the request always asks
+		// for the NDJSON protocol; a nil observer just collects.
+		if req["stream"] != true {
+			t.Errorf("stream = %v, want true", req["stream"])
 		}
-		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"hi"}}`))
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"hi"}}` + "\n" + `{"done":true}` + "\n"))
 	}))
 	defer srv.Close()
 
@@ -43,6 +45,62 @@ func TestChatPostsToAPIChat(t *testing.T) {
 	}
 	if resp.Content != "hi" {
 		t.Errorf("content = %q, want %q", resp.Content, "hi")
+	}
+}
+
+// TestChatStreamsTokens verifies ChatStream against ollama's NDJSON
+// protocol: every message.content delta reaches the observer in
+// order, the full text comes back, and the final done marker and
+// empty deltas are ignored.
+func TestChatStreamsTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			`{"message":{"role":"assistant","content":"hel"}}`,
+			`{"message":{"role":"assistant","content":"lo "}}`,
+			`{"message":{"role":"assistant","content":"world"},"done":false}`,
+			`{"done":true}`,
+		} {
+			_, _ = w.Write([]byte(line + "\n"))
+			fl.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	o, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var deltas []string
+	resp, err := o.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(d string) {
+		deltas = append(deltas, d)
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Content != "hello world" {
+		t.Errorf("content = %q, want %q", resp.Content, "hello world")
+	}
+	if strings.Join(deltas, "") != "hello world" {
+		t.Errorf("deltas = %v, want hel lo  world in order", deltas)
+	}
+}
+
+// TestChatStreamCarriesErrorLine pins that an error object streamed
+// mid-answer fails the call with the server's own message.
+func TestChatStreamCarriesErrorLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"hal"}}` + "\n" + `{"error":"model 'nope' not found"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	o, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = o.ChatStream(context.Background(), backend.ChatRequest{Model: "nope"}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "model 'nope' not found") {
+		t.Errorf("ChatStream error = %v, want the server's message", err)
 	}
 }
 

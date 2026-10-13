@@ -28,7 +28,7 @@ func TestRunTaskCompletesHeadless(t *testing.T) {
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "all done"}, "m", "sys", nil)
 
-	res, err := RunTask(a, gate, "do it", tea.WithoutRenderer(), tea.WithInput(nil))
+	res, err := RunTask(a, gate, nil, "do it", tea.WithoutRenderer(), tea.WithInput(nil))
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestRunModelApprovalFlow(t *testing.T) {
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil,
 		agent.WithApprover(gate.Approver()))
-	m := newRunModel(a, gate, "task")
+	m := newRunModel(a, gate, nil, "task")
 
 	// A tool call arrives: the view switches to the approval dialog.
 	reply := make(chan bool, 1)
@@ -96,14 +96,14 @@ func TestRunModelDoneAndError(t *testing.T) {
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
 
-	done := newRunModel(a, gate, "task")
+	done := newRunModel(a, gate, nil, "task")
 	next, _ := done.Update(stepDoneMsg{res: agent.RunResult{Answer: "here it is", Turns: 2}})
 	done = next.(*runModel)
 	if done.state != runDone || !strings.Contains(done.View().Content, "here it is") {
 		t.Errorf("done state = %v, view = %q", done.state, done.View().Content)
 	}
 
-	failing := newRunModel(a, gate, "task")
+	failing := newRunModel(a, gate, nil, "task")
 	next, _ = failing.Update(stepDoneMsg{err: errors.New("backend down")})
 	failing = next.(*runModel)
 	if failing.state != runError || !strings.Contains(failing.View().Content, "backend down") {

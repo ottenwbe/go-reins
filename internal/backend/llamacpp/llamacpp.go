@@ -5,8 +5,11 @@ package llamacpp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"go-reins/internal/backend"
@@ -37,25 +40,67 @@ func New(cfg backend.Config) (*LlamaCpp, error) {
 // Name implements backend.Backend.
 func (l *LlamaCpp) Name() string { return "llamacpp" }
 
-// Chat implements backend.Backend.
+// Chat implements backend.Backend by delegating to ChatStream with
+// no observer: one wire path serves both callers, streaming or not.
 func (l *LlamaCpp) Chat(ctx context.Context, req backend.ChatRequest) (backend.ChatResponse, error) {
-	var payload struct {
-		Choices []struct {
-			Message backend.Message `json:"message"`
-		} `json:"choices"`
-	}
-	err := backend.PostJSON(ctx, l.client, l.baseURL, "/v1/chat/completions", map[string]any{
+	return l.ChatStream(ctx, req, nil)
+}
+
+// ChatStream implements backend.Streamer via /v1/chat/completions
+// with stream: true. llama-server answers in SSE: "data: {json}"
+// lines carrying choices[0].delta.content, closed by
+// "data: [DONE]". Comment and keep-alive lines are ignored.
+func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDelta func(string)) (backend.ChatResponse, error) {
+	var full strings.Builder
+	chunks := 0
+	err := backend.PostJSONLines(ctx, l.client, l.baseURL, "/v1/chat/completions", map[string]any{
 		"model":    req.Model,
 		"messages": req.Messages,
-		"stream":   false,
-	}, &payload)
+		"stream":   true,
+	}, func(line []byte) error {
+		s := string(line)
+		if !strings.HasPrefix(s, "data:") {
+			return nil // SSE comment or keep-alive
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
+		if data == "" || data == "[DONE]" {
+			return nil // keep-alive or the stream terminator
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return fmt.Errorf("decode chunk: %w", err)
+		}
+		if chunk.Error != nil && chunk.Error.Message != "" {
+			return errors.New(chunk.Error.Message)
+		}
+		if len(chunk.Choices) == 0 {
+			return nil
+		}
+		chunks++
+		if c := chunk.Choices[0].Delta.Content; c != "" {
+			full.WriteString(c)
+			if onDelta != nil {
+				onDelta(c)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return backend.ChatResponse{}, fmt.Errorf("llamacpp: %w", err)
 	}
-	if len(payload.Choices) == 0 {
-		return backend.ChatResponse{}, fmt.Errorf("llamacpp: empty response")
+	if chunks == 0 {
+		return backend.ChatResponse{}, errors.New("llamacpp: empty response")
 	}
-	return backend.ChatResponse{Content: payload.Choices[0].Message.Content}, nil
+	return backend.ChatResponse{Content: full.String()}, nil
 }
 
 // Models implements backend.Backend via the OpenAI-style /v1/models

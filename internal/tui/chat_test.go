@@ -35,7 +35,7 @@ func (f *failModels) Models(context.Context) ([]string, error) {
 // startChat builds a chat model in the state the command tests
 // exercise: input focused and a window size applied.
 func startChat(a *agent.Agent, gate *ApprovalGate, switchBackend func(string) error) *chatModel {
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", switchBackend)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", switchBackend)
 	m.Init()
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return next.(*chatModel)
@@ -56,7 +56,7 @@ func TestChatModelStepFlow(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "the answer"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", nil)
 	m.Init() // focuses the input area
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -116,7 +116,7 @@ func TestChatShowsCurrentTool(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, "go-reins chat", nil)
+	m := newChatModel(a, gate, feed, nil, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -152,7 +152,7 @@ func TestChatModelMultilineInput(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -191,7 +191,7 @@ func TestChatDropsStaleToolEvents(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, "go-reins chat", nil)
+	m := newChatModel(a, gate, feed, nil, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

@@ -27,6 +27,7 @@ type Config struct {
 	URL      string // backend base URL; empty = per-backend default
 	Model    string // model name, e.g. llama3.2
 	Yes      bool   // auto-approve tool calls
+	NoStream bool   // disable streamed replies in the interactive views
 	History  bool   // dump the conversation after the answer
 	Turns    bool   // report how many turns the run took
 	LogLevel string // zap level: debug, info, warn, error
@@ -113,6 +114,7 @@ type fileConfig struct {
 	URL      string            `yaml:"url"`
 	Model    string            `yaml:"model"`
 	Yes      bool              `yaml:"yes"`
+	NoStream bool              `yaml:"no-stream"`
 	History  bool              `yaml:"history"`
 	Turns    bool              `yaml:"turns"`
 	LogLevel string            `yaml:"log-level"`
@@ -178,6 +180,7 @@ func readInto(c *Config, path string) error {
 	// Booleans have no "unset" distinct from false, so a file entry
 	// is taken as an explicit choice.
 	c.Yes = fc.Yes
+	c.NoStream = fc.NoStream
 	c.History = fc.History
 	c.Turns = fc.Turns
 	// Slices and maps are nil when absent, which keeps "not set"
@@ -237,9 +240,10 @@ func applyEnv(c *Config) error {
 		return nil
 	}
 	for key, target := range map[string]*bool{
-		"yes":     &c.Yes,
-		"history": &c.History,
-		"turns":   &c.Turns,
+		"yes":       &c.Yes,
+		"no-stream": &c.NoStream,
+		"history":   &c.History,
+		"turns":     &c.Turns,
 	} {
 		if err := boolean(key, target); err != nil {
 			return err
@@ -327,9 +331,10 @@ func applyFlags(c *Config, flags *flag.FlagSet) error {
 		return nil
 	}
 	for name, target := range map[string]*bool{
-		"yes":     &c.Yes,
-		"history": &c.History,
-		"turns":   &c.Turns,
+		"yes":       &c.Yes,
+		"no-stream": &c.NoStream,
+		"history":   &c.History,
+		"turns":     &c.Turns,
 	} {
 		if err := boolFlag(name, target); err != nil {
 			return err

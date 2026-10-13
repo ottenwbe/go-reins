@@ -95,6 +95,7 @@ type Agent struct {
 	byName   map[string]Tool
 	approver Approver
 	observer ToolObserver
+	stream   StreamObserver
 	logger   *zap.Logger
 	maxTurns int
 }
@@ -257,12 +258,28 @@ func (a *Agent) seedHistory(history []backend.Message) []backend.Message {
 }
 
 // chat performs one backend round trip and turns a failure into the
-// agent's turn-stamped error.
+// agent's turn-stamped error. When an observer is installed and the
+// backend offers streaming, the reply text is handed to it as it
+// arrives (through the stream gate, which hides tool-call lines);
+// the full response still comes back, so the loop is unchanged.
 func (a *Agent) chat(ctx context.Context, turn int, history []backend.Message) (backend.ChatResponse, error) {
-	resp, err := a.backend.Chat(ctx, backend.ChatRequest{
+	req := backend.ChatRequest{
 		Model:    a.model,
 		Messages: history,
-	})
+	}
+
+	var (
+		resp backend.ChatResponse
+		err  error
+	)
+	if s, ok := a.backend.(backend.Streamer); ok && a.stream != nil {
+		// A fresh gate per turn: line state must not leak across
+		// turns.
+		gate := newStreamGate(a.stream)
+		resp, err = s.ChatStream(ctx, req, gate.push)
+	} else {
+		resp, err = a.backend.Chat(ctx, req)
+	}
 	if err != nil {
 		a.logger.Warn("backend chat failed", zap.Int("turn", turn), zap.Error(err))
 		return backend.ChatResponse{}, fmt.Errorf("agent: turn %d: %w", turn, err)

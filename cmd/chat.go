@@ -31,8 +31,12 @@ func chatSession(cmd *cobra.Command, args []string) error {
 
 	gate := tui.NewApprovalGate()
 	feed := tui.NewToolFeed()
-	a, err := session.NewAgent(conf, session.GateApprover(gate, conf),
-		agent.WithToolObserver(feed.Observer()))
+	stream := tui.NewStreamFeed()
+	opts := []agent.Option{agent.WithToolObserver(feed.Observer())}
+	if !conf.NoStream {
+		opts = append(opts, agent.WithStreamObserver(stream.Observer()))
+	}
+	a, err := session.NewAgent(conf, session.GateApprover(gate, conf), opts...)
 	if err != nil {
 		return err
 	}
@@ -51,5 +55,5 @@ func chatSession(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return tui.Chat(a, gate, feed, "go-reins chat", switchBackend)
+	return tui.Chat(a, gate, feed, stream, "go-reins chat", switchBackend)
 }

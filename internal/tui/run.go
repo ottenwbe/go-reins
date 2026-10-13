@@ -34,13 +34,17 @@ const (
 
 // runModel drives a one-shot task: a spinner while the model works,
 // an approval dialog on each tool call, and the answer as the final
-// frame. The agent loop runs in a goroutine started by Init.
+// frame. The agent loop runs in a goroutine started by Init; when a
+// stream feed is wired, the reply text appears under the spinner as
+// it arrives.
 type runModel struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	agent    *agent.Agent
 	gate     *ApprovalGate
+	stream   *StreamFeed // may be nil: no observer wired, nothing armed
 	task     string
+	live     string // streamed reply text, shown while thinking
 	spinner  spinner.Model
 	state    runState
 	res      agent.RunResult
@@ -48,13 +52,14 @@ type runModel struct {
 	approval *ApprovalRequest
 }
 
-func newRunModel(a *agent.Agent, gate *ApprovalGate, task string) *runModel {
+func newRunModel(a *agent.Agent, gate *ApprovalGate, stream *StreamFeed, task string) *runModel {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &runModel{
 		ctx:     ctx,
 		cancel:  cancel,
 		agent:   a,
 		gate:    gate,
+		stream:  stream,
 		task:    task,
 		spinner: spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(spinnerStyle)),
 	}
@@ -62,10 +67,15 @@ func newRunModel(a *agent.Agent, gate *ApprovalGate, task string) *runModel {
 
 // RunTask runs the agent under a bubbletea program and returns when
 // the program exits. The final frame contains the answer (or the
-// error), so nothing needs printing afterwards. Options are passed
+// error), so nothing needs printing afterwards. The stream feed
+// (may be nil) receives the reply text as it arrives, so the
+// thinking frame shows the answer forming. Options are passed
 // through to the program (used by tests to run headless).
-func RunTask(a *agent.Agent, gate *ApprovalGate, task string, opts ...tea.ProgramOption) (agent.RunResult, error) {
-	final, err := tea.NewProgram(newRunModel(a, gate, task), opts...).Run()
+func RunTask(a *agent.Agent, gate *ApprovalGate, stream *StreamFeed, task string, opts ...tea.ProgramOption) (agent.RunResult, error) {
+	if stream != nil {
+		defer stream.Close()
+	}
+	final, err := tea.NewProgram(newRunModel(a, gate, stream, task), opts...).Run()
 	if err != nil {
 		return agent.RunResult{}, err
 	}
@@ -83,11 +93,11 @@ func RunTask(a *agent.Agent, gate *ApprovalGate, task string, opts ...tea.Progra
 	}
 }
 
-// Init starts the agent goroutine, the spinner, and the first
-// approval wait. The agent closes the gate when it finishes so a
-// pending Wait cannot block forever.
+// Init starts the agent goroutine, the spinner, the first approval
+// wait, and the stream wait. The agent closes the gate when it
+// finishes so a pending Wait cannot block forever.
 func (m *runModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		func() tea.Msg {
 			res, err := m.agent.Run(m.ctx, m.task)
 			m.gate.Close()
@@ -95,7 +105,11 @@ func (m *runModel) Init() tea.Cmd {
 		},
 		m.spinner.Tick,
 		m.gate.Wait(),
-	)
+	}
+	if m.stream != nil {
+		cmds = append(cmds, m.stream.WaitOn(nil))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *runModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -103,12 +117,17 @@ func (m *runModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case stepDoneMsg:
 		m.gate.Close()
 		m.cancel()
+		m.live = ""
 		if msg.err != nil {
 			m.err, m.state = msg.err, runError
 		} else {
 			m.res, m.state = msg.res, runDone
 		}
 		return m, tea.Quit
+
+	case StreamEvent:
+		m.live = appendLive(m.live, msg.Delta)
+		return m, m.stream.WaitOn(nil)
 
 	case ApprovalRequest:
 		m.approval, m.state = &msg, runApproving
@@ -164,6 +183,13 @@ func (m *runModel) View() tea.View {
 	case runThinking:
 		sb.WriteString(m.spinner.View())
 		sb.WriteString(" thinking\n")
+		if m.live != "" {
+			// The answer forming, streamed; the final frame below
+			// carries the complete text.
+			sb.WriteString("\n")
+			sb.WriteString(answerStyle.Render(m.live))
+			sb.WriteString("\n")
+		}
 	case runApproving:
 		sb.WriteString(renderApproval(m.approval))
 	case runDone:
