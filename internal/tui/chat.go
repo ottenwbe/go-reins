@@ -44,7 +44,7 @@ type chatModel struct {
 
 	history    []backend.Message
 	lines      []string
-	live       string // streamed reply text of the running step, for the status area
+	live       string // streamed reply of the running step, shown as a forming line in the transcript
 	viewport   viewport.Model
 	textarea   textarea.Model
 	spinner    spinner.Model
@@ -136,8 +136,8 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *St
 // state there); the transcript lives only as long as the session.
 // The feed receives the agent's tool calls, so the status line can
 // show which tool is in use; the stream feed (may be nil) receives
-// the reply text as it arrives, so the operator watches the answer
-// form instead of a spinner. switchBackend (may be nil) connects
+// the reply text as it arrives, so the answer forms in the
+// transcript itself. switchBackend (may be nil) connects
 // the /backend command to the config-backed backend constructors.
 func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, title string, switchBackend func(string) error) error {
 	defer feed.Close()
@@ -180,28 +180,33 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StreamEvent:
 		// A delta from a step that already ended is noise: drop it
-		// instead of reviving the status area and arming a new
+		// instead of reviving the transcript and arming a new
 		// waiter while idle.
 		if m.state != chatBusy {
 			return m, nil
 		}
-		// The reply is forming: grow the live text and keep
+		// The reply is forming: grow the live text, rerender the
+		// transcript so the answer grows in place, and keep
 		// listening for more.
 		m.live = appendLive(m.live, msg.Delta)
+		m.refreshTranscript()
 		return m, m.stream.WaitOn(m.step.done)
 
 	case stepDoneMsg:
 		// The step is over: cancel its waiters so they cannot
-		// linger into the next prompt, then show the outcome.
+		// linger into the next prompt, then show the outcome. The
+		// state settles before the outcome is appended so the
+		// rerender drops the forming line - the final answer
+		// replaces it in the same spot.
 		m.step.cancel()
 		m.step = nil
+		m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
 		} else {
 			m.history = msg.res.History
 			m.appendLine(answerStyle.Render(msg.res.Answer))
 		}
-		m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 		return m, nil
 
 	case modelsDoneMsg:
@@ -327,10 +332,10 @@ func shorten(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// maxLive caps the streamed text the busy view keeps. The final
-// answer lands in the transcript from the step result regardless,
-// so the live buffer only serves the in-progress view - long
-// replies show their tail.
+// maxLive caps the streamed text the forming transcript line keeps.
+// The final answer lands in the transcript from the step result
+// regardless, so the live buffer only serves the in-progress view -
+// long replies show their tail.
 const maxLive = 8 * 1024
 
 // appendLive grows the live text, capped to its tail on a rune
@@ -387,7 +392,19 @@ func (m *chatModel) submit() tea.Cmd {
 // the bottom.
 func (m *chatModel) appendLine(line string) {
 	m.lines = append(m.lines, line)
-	m.viewport.SetContent(strings.Join(m.lines, "\n"))
+	m.refreshTranscript()
+}
+
+// refreshTranscript renders the transcript into the viewport: the
+// finished lines, plus - while a step is streaming - the forming
+// reply as one more line at the bottom. The step result replaces it
+// wholesale, so the completed answer never doubles up.
+func (m *chatModel) refreshTranscript() {
+	content := strings.Join(m.lines, "\n")
+	if m.state == chatBusy && m.live != "" {
+		content += "\n" + answerStyle.Render(m.live)
+	}
+	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
 }
 
@@ -586,13 +603,6 @@ func (m *chatModel) View() tea.View {
 			sb.WriteString(dimStyle.Render("thinking…"))
 		} else {
 			sb.WriteString(dimStyle.Render("answering…"))
-		}
-		if m.live != "" {
-			// The streamed reply replaces the plain status word:
-			// the operator watches the answer form. The completed
-			// answer lands in the transcript when the step ends.
-			sb.WriteString("\n\n")
-			sb.WriteString(answerStyle.Render(m.live))
 		}
 	case chatApproving:
 		sb.WriteString(fmt.Sprintf("allow? %s",

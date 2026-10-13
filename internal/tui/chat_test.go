@@ -798,3 +798,61 @@ func TestStepScopeCancelIsIdempotent(t *testing.T) {
 	var none *stepScope
 	none.cancel()
 }
+
+// TestChatStreamsIntoTranscript verifies that streamed deltas render
+// as a forming line inside the transcript, that the line keeps growing
+// with each delta, and that the step result replaces it in place
+// without doubling up the answer.
+func TestChatStreamsIntoTranscript(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	stream := NewStreamFeed()
+	defer stream.Close()
+	a := agent.New(&stubBackend{reply: "the full answer"}, "m", "sys", nil)
+	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m.Init()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	if m.state != chatBusy {
+		t.Fatalf("state after submit = %v, want chatBusy", m.state)
+	}
+
+	// The first delta puts the forming line into the transcript.
+	next, _ = m.Update(StreamEvent{Delta: "the "})
+	m = next.(*chatModel)
+	view := m.View().Content
+	if !strings.Contains(view, "the ") {
+		t.Errorf("first delta missing from transcript: %q", view)
+	}
+
+	// A second delta grows the line in place.
+	next, _ = m.Update(StreamEvent{Delta: "full"})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "the full") {
+		t.Errorf("second delta missing from transcript: %q", m.View().Content)
+	}
+
+	// The step ends: the final answer replaces the forming line,
+	// appearing exactly once.
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "the full answer"}})
+	m = next.(*chatModel)
+	if m.state != chatReady {
+		t.Errorf("state after step = %v, want chatReady", m.state)
+	}
+	if got := strings.Count(m.View().Content, "the full answer"); got != 1 {
+		t.Errorf("final answer appears %d times, want 1", got)
+	}
+
+	// A delta from a step that already ended is dropped instead of
+	// reviving the transcript.
+	next, _ = m.Update(StreamEvent{Delta: "noise"})
+	m = next.(*chatModel)
+	if strings.Contains(m.View().Content, "noise") {
+		t.Error("stale delta reached the transcript")
+	}
+}
