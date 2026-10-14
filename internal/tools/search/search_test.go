@@ -222,3 +222,86 @@ func TestSearchHonorsCancellation(t *testing.T) {
 		t.Error("cancelled context should fail the search")
 	}
 }
+
+// TestSearchSkipsSymlinks pins the escape hatch staying shut: a
+// symlink inside the working directory can point anywhere, and the
+// search must neither list it nor read through it - grep mode
+// especially, or a link to a file outside the tree would leak its
+// contents through a read-only, unapproved tool.
+func TestSearchSkipsSymlinks(t *testing.T) {
+	outside := t.TempDir()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("top secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "leak.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// An in-tree symlink is skipped too: the tool's contract is
+	// regular files only.
+	writeFile(t, dir, "real.txt", "also secret\n")
+	if err := os.Symlink("real.txt", filepath.Join(dir, "alias.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := call(t, `{"glob":"**/*.txt","query":"secret"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "leak.txt") || strings.Contains(out, "alias.txt") || strings.Contains(out, "top secret") {
+		t.Errorf("symlink leaked into the results:\n%s", out)
+	}
+	if !strings.Contains(out, "real.txt:1:also secret") {
+		t.Errorf("regular file match missing:\n%s", out)
+	}
+
+	// List mode skips symlinks just the same.
+	out, err = call(t, `{"glob":"**/*.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "leak.txt") || strings.Contains(out, "alias.txt") {
+		t.Errorf("symlink listed:\n%s", out)
+	}
+}
+
+// TestSearchMultiStarGlobs pins patterns with several ** segments:
+// they match deeply nested paths, and a pattern that matches
+// nothing must terminate - the matcher is a dynamic program, not a
+// backtracking search, so adversarial globs cannot stall it.
+func TestSearchMultiStarGlobs(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, filepath.Join("a", "b", "c", "d", "f.txt"), "deep\n")
+	writeFile(t, dir, "shallow.txt", "flat\n")
+
+	out, err := call(t, `{"glob":"**/b/**/f.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "a/b/c/d/f.txt") || strings.Contains(out, "shallow.txt") {
+		t.Errorf("multi-** glob matched wrong paths:\n%s", out)
+	}
+
+	// Several ** segments that match nothing terminate promptly.
+	out, err = call(t, `{"glob":"**/**/**/nope/**/x"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out != "(no matches)" {
+		t.Errorf("unmatched glob = %q, want (no matches)", out)
+	}
+
+	// ** inside a name segment is two stars - within a segment
+	// that is just a greedy *, so f**.txt matches f.txt the way
+	// f*.txt does; only a whole ** segment spans directories.
+	out, err = call(t, `{"glob":"**/f**.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "a/b/c/d/f.txt") || strings.Contains(out, "shallow.txt") {
+		t.Errorf("within-segment ** misbehaved:\n%s", out)
+	}
+}

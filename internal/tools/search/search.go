@@ -211,26 +211,37 @@ func cleanGlob(glob string) ([]string, error) {
 // matchSegments reports whether a cleaned path matches the pattern:
 // "**" spans any number of directories (including none), every
 // other segment is a filepath.Match pattern within its directory.
+// The match is a dynamic program over (pattern, name) positions, so
+// any number of "**" segments costs O(len(pattern)*len(name))
+// segment matches - a recursive matcher would backtrack
+// combinatorially on adversarial patterns with several "**".
 func matchSegments(pattern, name []string) bool {
-	if len(pattern) == 0 {
-		return len(name) == 0
-	}
-	if pattern[0] == "**" {
-		for skip := 0; skip <= len(name); skip++ {
-			if matchSegments(pattern[1:], name[skip:]) {
-				return true
+	// dp[j] holds one row of the table: dp[j] is true when
+	// pattern[:i] matches name[:j]. dp[0] starts true: the empty
+	// pattern matches the empty prefix.
+	dp := make([]bool, len(name)+1)
+	dp[0] = true
+	for i := 1; i <= len(pattern); i++ {
+		seg := pattern[i-1]
+		if seg == "**" {
+			// "**" absorbs any number of segments: once any prefix
+			// matched on the row above, everything from there on
+			// matches here too.
+			for j := 1; j <= len(name); j++ {
+				dp[j] = dp[j] || dp[j-1]
 			}
+			continue
 		}
-		return false
+		// A concrete segment consumes exactly one name segment.
+		// Scanning right to left keeps dp[j-1] holding the row
+		// above, so no second row is needed.
+		for j := len(name); j >= 1; j-- {
+			ok, err := filepath.Match(seg, name[j-1])
+			dp[j] = dp[j-1] && err == nil && ok
+		}
+		dp[0] = false // a concrete segment cannot match the empty prefix
 	}
-	if len(name) == 0 {
-		return false
-	}
-	ok, err := filepath.Match(pattern[0], name[0])
-	if err != nil || !ok {
-		return false
-	}
-	return matchSegments(pattern[1:], name[1:])
+	return dp[len(name)]
 }
 
 // collect walks the working directory and returns the file paths
@@ -253,6 +264,15 @@ func collect(ctx context.Context, pattern []string) ([]string, error) {
 			if path != "." && strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Only regular files are considered - symlinks, fifos,
+		// devices, sockets are not. A symlink inside the tree could
+		// point outside the working directory, and the walk never
+		// resolves entries: grep would open what the walk did not
+		// vet. The read tool resolves and refuses such paths; the
+		// search tool must not become the read-only back door.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if strings.HasPrefix(d.Name(), ".") {
