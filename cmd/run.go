@@ -83,7 +83,7 @@ func runHeadless(task string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(res.Answer)
+	fmt.Println(tui.Sanitize(res.Answer))
 	if conf.Turns {
 		fmt.Fprintf(os.Stderr, "\nrun finished in %d turn(s)\n", res.Turns)
 	}
@@ -98,7 +98,7 @@ func runHeadless(task string) error {
 func printHistory(history []backend.Message) {
 	fmt.Fprintln(os.Stderr, "\n--- conversation history ---")
 	for i, m := range history {
-		fmt.Fprintf(os.Stderr, "\n[%d] %s\n%s\n", i+1, m.Role, m.Content)
+		fmt.Fprintf(os.Stderr, "\n[%d] %s\n%s\n", i+1, m.Role, tui.Sanitize(m.Content))
 	}
 }
 
@@ -116,7 +116,7 @@ func stdinApprover(in io.Reader, out io.Writer) agent.Approver {
 	// buffer and lose them (printf 'y\ny\n' | go-reins run ...).
 	reader := bufio.NewReader(in)
 	return func(name, args string) bool {
-		fmt.Fprintf(out, "\ntool call: %s %s\n", name, args)
+		fmt.Fprintf(out, "\ntool call: %s %s\n", tui.Sanitize(name), tui.Sanitize(args))
 		fmt.Fprint(out, "allow? [y/N]: ")
 
 		line, err := reader.ReadString('\n')

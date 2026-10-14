@@ -261,10 +261,10 @@ func (m *chatModel) updateStepDone(msg stepDoneMsg) tea.Cmd {
 	m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 	m.layout() // the input area returns: the textarea replaces the pause line
 	if msg.err != nil {
-		m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
+		m.appendLine(errorStyle.Render(Sanitize("error: " + msg.err.Error())))
 	} else {
 		m.history = msg.res.History
-		m.appendLine(answerStyle.Render(msg.res.Answer))
+		m.appendLine(answerStyle.Render(Sanitize(msg.res.Answer)))
 	}
 	return nil
 }
@@ -279,7 +279,7 @@ func (m *chatModel) updateModelsDone(msg modelsDoneMsg) tea.Cmd {
 		return nil
 	}
 	if msg.err != nil {
-		m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
+		m.appendLine(errorStyle.Render(Sanitize("error: " + msg.err.Error())))
 		return nil
 	}
 	if msg.want != "" {
@@ -302,7 +302,7 @@ func (m *chatModel) updateModelsDone(msg modelsDoneMsg) tea.Cmd {
 		m.appendLine(dimStyle.Render("(the backend reported no models)"))
 		return nil
 	}
-	m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
+	m.appendLine(dimStyle.Render(Sanitize(strings.Join(msg.names, "\n"))))
 	// The switch's follow-up reconciles only when no newer /model
 	// actually selected a model: a command that was refused never
 	// decided anything, and suppressing the fallback then would
@@ -321,7 +321,7 @@ func (m *chatModel) updateModelsDone(msg modelsDoneMsg) tea.Cmd {
 func (m *chatModel) updateApprovalRequest(msg ApprovalRequest) tea.Cmd {
 	m.approval, m.state = &msg, chatApproving
 	m.layout() // the input area pauses for the decision
-	m.appendLine(toolStyle.Render("tool call: " + msg.Tool + " " + msg.Args))
+	m.appendLine(toolStyle.Render(Sanitize("tool call: " + msg.Tool + " " + msg.Args)))
 	return nil
 }
 
@@ -475,7 +475,7 @@ func (m *chatModel) appendLine(line string) {
 func (m *chatModel) refreshTranscript() {
 	content := strings.Join(m.lines, "\n")
 	if m.live != "" {
-		content += "\n" + answerStyle.Render(m.live)
+		content += "\n" + answerStyle.Render(Sanitize(m.live))
 	}
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
@@ -543,14 +543,14 @@ func (m *chatModel) applyModel(want string, names []string) bool {
 	match := modelAvailable(want, names)
 	if match == "" {
 		if len(names) == 0 {
-			m.appendLine(errorStyle.Render("no model " + want + " · the backend reported no models"))
+			m.appendLine(errorStyle.Render(Sanitize("no model " + want + " · the backend reported no models")))
 			return false
 		}
-		m.appendLine(errorStyle.Render("no model " + want + " · available: " + strings.Join(names, ", ")))
+		m.appendLine(errorStyle.Render(Sanitize("no model " + want + " · available: " + strings.Join(names, ", "))))
 		return false
 	}
 	m.agent.SetModel(match)
-	m.appendLine(dimStyle.Render("model set to " + match))
+	m.appendLine(dimStyle.Render(Sanitize("model set to " + match)))
 	return true
 }
 
@@ -574,12 +574,12 @@ func (m *chatModel) reconcileModel(names []string) {
 		// backend may not have.
 		if match != old {
 			m.agent.SetModel(match)
-			m.appendLine(dimStyle.Render(old + " resolves to " + match + " here - model set to " + match))
+			m.appendLine(dimStyle.Render(Sanitize(old + " resolves to " + match + " here - model set to " + match)))
 		}
 		return
 	}
 	m.agent.SetModel(names[0])
-	m.appendLine(dimStyle.Render(old + " is not served here - switched to " + names[0]))
+	m.appendLine(dimStyle.Render(Sanitize(old + " is not served here - switched to " + names[0])))
 }
 
 // command runs one REPL slash command. Commands act on the live
@@ -676,10 +676,10 @@ func (m *chatModel) View() tea.View {
 		sb.WriteString(m.spinner.View())
 		sb.WriteString(" ")
 		if m.tool.Name != "" {
-			sb.WriteString(toolStyle.Render(m.tool.Name))
+			sb.WriteString(toolStyle.Render(Sanitize(m.tool.Name)))
 			if m.tool.Args != "" {
 				sb.WriteString(" ")
-				sb.WriteString(dimStyle.Render(shorten(m.tool.Args, 60)))
+				sb.WriteString(dimStyle.Render(shorten(Sanitize(m.tool.Args), 60)))
 			}
 		} else if m.live == "" {
 			sb.WriteString(dimStyle.Render("thinking…"))

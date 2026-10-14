@@ -187,19 +187,19 @@ func (m *runModel) View() tea.View {
 			// The answer forming, streamed; the final frame below
 			// carries the complete text.
 			sb.WriteString("\n")
-			sb.WriteString(answerStyle.Render(m.live))
+			sb.WriteString(answerStyle.Render(Sanitize(m.live)))
 			sb.WriteString("\n")
 		}
 	case runApproving:
 		sb.WriteString(renderApproval(m.approval))
 	case runDone:
 		sb.WriteString("\n")
-		sb.WriteString(answerStyle.Render(m.res.Answer))
+		sb.WriteString(answerStyle.Render(Sanitize(m.res.Answer)))
 		sb.WriteString("\n\n")
 		sb.WriteString(dimStyle.Render(fmt.Sprintf("%d turn(s)", m.res.Turns)))
 		sb.WriteString("\n")
 	case runError:
-		sb.WriteString(errorStyle.Render("error: " + m.err.Error()))
+		sb.WriteString(errorStyle.Render(Sanitize("error: " + m.err.Error())))
 		sb.WriteString("\n")
 	case runAborted:
 		sb.WriteString(dimStyle.Render("aborted"))
@@ -212,9 +212,9 @@ func (m *runModel) View() tea.View {
 func renderApproval(req *ApprovalRequest) string {
 	var sb strings.Builder
 	sb.WriteString(toolStyle.Render("tool call: "))
-	sb.WriteString(req.Tool)
+	sb.WriteString(Sanitize(req.Tool))
 	sb.WriteString(" ")
-	sb.WriteString(req.Args)
+	sb.WriteString(Sanitize(req.Args))
 	sb.WriteString("\n")
 	sb.WriteString("allow? ")
 	sb.WriteString(dimStyle.Render("[y] allow · [n] deny · ctrl+c abort"))

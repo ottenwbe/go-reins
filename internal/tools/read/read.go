@@ -80,13 +80,30 @@ func (r *Read) Execute(ctx context.Context, args string) (string, error) {
 	if call.Path == "" {
 		return "", errors.New("empty path: pass {\"path\": \"...\"}")
 	}
-
-	path, err := resolveInWorkdir(call.Path)
-	if err != nil {
-		return "", err
+	if filepath.IsAbs(call.Path) {
+		return "", fmt.Errorf("path %s must be relative to the working directory", call.Path)
 	}
 
-	info, err := os.Stat(path)
+	// All access goes through a workspace root (os.Root, openat
+	// style): path resolution is constrained to the working
+	// directory at the moment of the open, and the handle that
+	// gets read is the handle that was vetted. Resolving first and
+	// reopening by name - the old way - leaves a window where a
+	// swapped path component becomes a symlink out of the tree,
+	// and this tool runs without operator approval.
+	root, err := os.OpenRoot(".")
+	if err != nil {
+		return "", fmt.Errorf("open working directory: %w", err)
+	}
+	defer root.Close()
+
+	f, err := root.Open(call.Path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", call.Path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("stat %s: %w", call.Path, err)
 	}
@@ -97,44 +114,19 @@ func (r *Read) Execute(ctx context.Context, args string) (string, error) {
 	if call.Offset < 1 {
 		call.Offset = 1
 	}
-	lines, truncated, err := readWindow(ctx, path, call.Offset, call.Limit)
+	lines, truncated, err := readWindow(ctx, f, call.Path, call.Offset, call.Limit)
 	if err != nil {
 		return "", err
 	}
 	return render(lines, call.Offset, truncated), nil
 }
 
-// resolveInWorkdir turns a relative path into an absolute one and
-// rejects anything that leaves the working directory, including
-// via symlink. Absolute paths are rejected outright.
-func resolveInWorkdir(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return "", fmt.Errorf("path %s must be relative to the working directory", path)
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("resolve working directory: %w", err)
-	}
-	realCwd, err := filepath.EvalSymlinks(cwd)
-	if err != nil {
-		return "", fmt.Errorf("resolve working directory: %w", err)
-	}
-
-	abs := filepath.Join(cwd, path)
-	real, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", path, err)
-	}
-	if real != realCwd && !strings.HasPrefix(real, realCwd+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %s escapes the working directory", path)
-	}
-	return real, nil
-}
-
-// readWindow streams the file and returns the requested window of
-// lines - the file is never loaded whole, and no line is ever held
-// beyond maxLineLen bytes, so neither a huge file nor a huge line
-// costs memory. The offset is 1-based; zero or negative means 1.
+// readWindow streams the requested window of lines from the
+// already-vetted handle - the file is never loaded whole, and no
+// line is ever held beyond maxLineLen bytes, so neither a huge
+// file nor a huge line costs memory. path is the caller's spelling,
+// for error messages only; the access itself went through the
+// workspace root. The offset is 1-based; zero or negative means 1.
 // The limit defaults to defaultLimit and is capped at maxLimit.
 //
 // The byte budget counts what render will actually emit - the
@@ -144,13 +136,7 @@ func resolveInWorkdir(path string) (string, error) {
 // truncated reports that either cap hit. Scanning honors ctx, so
 // cancellation during a long skip or a huge line is prompt. Binary
 // detection sees only the requested window, not the whole file.
-func readWindow(ctx context.Context, path string, offset, limit int) (lines []string, truncated bool, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false, fmt.Errorf("read file: %w", err)
-	}
-	defer f.Close()
-
+func readWindow(ctx context.Context, f *os.File, path string, offset, limit int) (lines []string, truncated bool, err error) {
 	if offset < 1 {
 		offset = 1
 	}
