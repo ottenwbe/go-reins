@@ -428,3 +428,97 @@ func TestStepContinuesSession(t *testing.T) {
 		t.Errorf("step 2 conversation = %v", msgs)
 	}
 }
+
+// TestRunCorrectsMalformedToolCall pins the recovery from the
+// failure small models actually produce: a TOOLCALL line without a
+// tool name. The raw call text must not become the answer - the
+// loop feeds a correction back as a TOOLRESULT, and the model's
+// next attempt runs the tool.
+func TestRunCorrectsMalformedToolCall(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL {"city":"Berlin"}`},         // nameless: the reported failure
+		{Content: `TOOLCALL weather {"city":"Berlin"}`}, // corrected retry
+		{Content: "It is raining in Berlin."},           // final answer
+	}}
+	weather := &fakeTool{name: "weather", desc: "current weather for a city", reply: "rain, 12C"}
+	a := New(fb, "test-model", "be brief", []Tool{weather})
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Answer != "It is raining in Berlin." {
+		t.Errorf("Run reply = %q, want the final answer", res.Answer)
+	}
+	if len(weather.calls) != 1 {
+		t.Errorf("tool calls = %v, want the corrected call to have run", weather.calls)
+	}
+	if res.Turns != 3 {
+		t.Errorf("Turns = %d, want 3 (malformed, corrected, final)", res.Turns)
+	}
+	// The correction reaches the model as a TOOLRESULT.
+	corrected := false
+	for _, m := range res.History {
+		if m.Role == backend.RoleUser && strings.HasPrefix(m.Content, "TOOLRESULT: the TOOLCALL line did not match") {
+			corrected = true
+		}
+	}
+	if !corrected {
+		t.Errorf("history missing the correction TOOLRESULT: %+v", res.History)
+	}
+}
+
+// TestRunCorrectsBadToolCallArguments pins the other malformed
+// shape: a tool name followed by arguments that are not JSON.
+func TestRunCorrectsBadToolCallArguments(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{Content: `TOOLCALL weather Berlin`},            // args not JSON
+		{Content: `TOOLCALL weather {"city":"Berlin"}`}, // corrected retry
+		{Content: "It is raining in Berlin."},
+	}}
+	weather := &fakeTool{name: "weather", desc: "current weather for a city", reply: "rain, 12C"}
+	a := New(fb, "test-model", "be brief", []Tool{weather})
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Answer != "It is raining in Berlin." || len(weather.calls) != 1 {
+		t.Errorf("answer=%q calls=%v, want the corrected call to have run", res.Answer, weather.calls)
+	}
+}
+
+// TestStreamGateHidesMalformedToolCall pins the observer view: a
+// nameless TOOLCALL line is protocol - the loop will correct it -
+// so it must not stream into the prose the operator watches.
+func TestStreamGateHidesMalformedToolCall(t *testing.T) {
+	var seen strings.Builder
+	gate := newStreamGate(func(s string) { seen.WriteString(s) })
+	gate.push("Let me check.\n")
+	gate.push(`TOOLCALL {"command": "git diff"}` + "\n")
+	gate.push("Done.\n")
+
+	out := seen.String()
+	if strings.Contains(out, "TOOLCALL") {
+		t.Errorf("malformed call leaked into the observer stream:\n%s", out)
+	}
+	if !strings.Contains(out, "Let me check.") || !strings.Contains(out, "Done.") {
+		t.Errorf("prose missing from the observer stream:\n%s", out)
+	}
+}
+
+// TestToolDocsShowsCallExample pins the prompt-level half of the
+// fix: the protocol section carries a concrete example with the
+// tool name before the JSON, because models were dropping the name.
+func TestToolDocsShowsCallExample(t *testing.T) {
+	weather := &fakeTool{name: "weather", desc: "current weather for a city"}
+	a := New(&fakeBackend{}, "m", "be brief", []Tool{weather})
+
+	docs := a.toolDocs()
+	if !strings.Contains(docs, `For example: TOOLCALL weather {"example": "value"}`) {
+		t.Errorf("tool docs missing the concrete call example:\n%s", docs)
+	}
+	if !strings.Contains(docs, "The tool name comes right after TOOLCALL, before the JSON arguments") {
+		t.Errorf("tool docs missing the name-order instruction:\n%s", docs)
+	}
+}

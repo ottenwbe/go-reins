@@ -31,6 +31,13 @@ const (
 
 var toolCallRe = regexp.MustCompile(toolCallPattern)
 
+// toolCallAttemptedRe matches any reply line that starts with the
+// TOOLCALL marker, well-formed or not. It lets the loop tell a
+// final answer from a malformed call: models drop the tool name or
+// mangle the JSON often enough that the distinction matters - the
+// raw call text must not silently become the answer.
+var toolCallAttemptedRe = regexp.MustCompile(`(?m)^TOOLCALL\b`)
+
 // Risk classifies a tool by what an approved call can do to the
 // machine. It drives the approval policy: mutating tools go through
 // the Approver, read-only tools run without interrupting the
@@ -232,8 +239,21 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 			Content: resp.Content,
 		})
 
-		name, args, ok := parseToolCall(resp.Content)
+		name, args, ok, correction := parseToolCall(resp.Content)
 		if !ok {
+			if correction != "" {
+				// A malformed tool call is not a final answer: the
+				// correction goes back as a TOOLRESULT and the
+				// model retries with the right shape. Without this,
+				// the raw call text would land as the answer - the
+				// failure mode where tool calls "silently break".
+				a.logger.Warn("malformed tool call", zap.Int("turn", turn))
+				history = append(history, backend.Message{
+					Role:    backend.RoleUser,
+					Content: toolResultLine + ": " + correction,
+				})
+				continue
+			}
 			a.logger.Info("final answer", zap.Int("turns", turn))
 			return RunResult{Answer: resp.Content, Turns: turn, History: history}, nil
 		}
@@ -341,14 +361,25 @@ func (a *Agent) toolNames() []string {
 	return names
 }
 
-// parseToolCall extracts the first TOOLCALL line from a model reply.
-// It reports ok=false for replies that are final answers.
-func parseToolCall(reply string) (name, args string, ok bool) {
+// parseToolCall extracts the first TOOLCALL line from a model
+// reply. It reports ok=false for replies that are final answers.
+// A reply that attempts a tool call but does not match the required
+// format - a missing tool name, arguments that are not JSON -
+// carries a correction instead: the loop feeds it back as a
+// TOOLRESULT observation, so the model retries with the right
+// shape instead of the harness giving up on the call.
+func parseToolCall(reply string) (name, args string, ok bool, correction string) {
 	m := toolCallRe.FindStringSubmatch(reply)
-	if m == nil {
-		return "", "", false
+	if m != nil {
+		return m[1], m[2], true, ""
 	}
-	return m[1], m[2], true
+	if toolCallAttemptedRe.MatchString(reply) {
+		return "", "", false, "the TOOLCALL line did not match the required format. " +
+			"Reply with exactly one line: TOOLCALL <name> <json-arguments> - " +
+			"the tool name comes right after TOOLCALL, before the JSON arguments. " +
+			`For example: TOOLCALL weather {"city": "Berlin"}`
+	}
+	return "", "", false, ""
 }
 
 // toolDocs renders the tool-call protocol for the system prompt. With
@@ -363,13 +394,20 @@ func (a *Agent) toolDocs() string {
 	for _, t := range a.tools {
 		fmt.Fprintf(&sb, "- %s: %s\n", t.Name(), t.Description())
 	}
+	example := "shell"
+	if len(a.tools) > 0 {
+		example = a.tools[0].Name()
+	}
 	fmt.Fprintf(&sb, `
 To call a tool, reply with a single line and nothing else:
 %s <name> <json-arguments>
 
+The tool name comes right after %s, before the JSON arguments - not
+inside them. For example: %s %s {"example": "value"}.
+
 The arguments must be single-line JSON. You will receive the outcome as a
 %s message; use it to continue. When no tool is needed, reply normally
 without a %s line.`,
-		toolCallLine, toolResultLine, toolCallLine)
+		toolCallLine, toolCallLine, toolCallLine, example, toolResultLine, toolCallLine)
 	return sb.String()
 }

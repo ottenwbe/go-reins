@@ -87,14 +87,17 @@ func (g *streamGate) push(delta string) {
 	}
 }
 
-// settleLine decides a completed buffered line: tool-call lines are
-// dropped, anything else is emitted with its newline.
+// settleLine decides a completed buffered line: any line that
+// starts with the marker is protocol and dropped - a well-formed
+// call, or a malformed attempt the agent loop will correct - and
+// everything else is emitted with its newline.
 func (g *streamGate) settleLine() {
 	line := g.line.String()
 	g.line.Reset()
-	if !toolCallRe.MatchString(line) {
-		g.observe(line + "\n")
+	if line == toolCallLine || strings.HasPrefix(line, toolCallLine+" ") {
+		return // protocol, not prose: the operator never sees calls
 	}
+	g.observe(line + "\n")
 }
 
 // mayBeToolCall reports whether the partial line could still be a
