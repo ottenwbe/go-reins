@@ -16,6 +16,7 @@ import (
 
 	"go-reins/internal/agent"
 	"go-reins/internal/backend"
+	"go-reins/internal/buildinfo"
 )
 
 // chatState is what the REPL is waiting for.
@@ -51,6 +52,7 @@ type chatModel struct {
 	gate          *ApprovalGate
 	feed          *ToolFeed
 	stream        *StreamFeed             // may be nil: no observer wired, nothing armed
+	version       string                  // ldflags-stamped release version, shown by /info
 	title         string                  // session line prefix; the live header appends backend/model
 	switchBackend func(name string) error // wires /backend to session.NewBackend
 	prompt        string                  // prompt of the running step, for the status line
@@ -93,11 +95,11 @@ func (s *stepScope) cancel() {
 	}
 }
 
-func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, title string, switchBackend func(string) error) *chatModel {
+func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, version, title string, switchBackend func(string) error) *chatModel {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ta := textarea.New()
-	ta.Placeholder = "type a task or /models, /model, /backend, /compact" + debugCommands + " · ctrl+j for a new line · ctrl+c quits"
+	ta.Placeholder = "type a task or /models, /model, /backend, /compact, /info" + debugCommands + " · ctrl+j for a new line · ctrl+c quits"
 	ta.ShowLineNumbers = true
 	ta.Prompt = "› "
 	ta.MaxHeight = 5
@@ -137,6 +139,7 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *St
 		gate:          gate,
 		feed:          feed,
 		stream:        stream,
+		version:       version,
 		title:         title,
 		switchBackend: switchBackend,
 		viewport:      viewport.New(),
@@ -154,12 +157,12 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *St
 // the reply text as it arrives, so the answer forms in the
 // transcript itself. switchBackend (may be nil) connects
 // the /backend command to the config-backed backend constructors.
-func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, title string, switchBackend func(string) error) error {
+func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, version, title string, switchBackend func(string) error) error {
 	defer feed.Close()
 	if stream != nil {
 		defer stream.Close()
 	}
-	_, err := tea.NewProgram(newChatModel(a, gate, feed, stream, title, switchBackend)).Run()
+	_, err := tea.NewProgram(newChatModel(a, gate, feed, stream, version, title, switchBackend)).Run()
 	return err
 }
 
@@ -749,6 +752,10 @@ func (m *chatModel) command(line string) tea.Cmd {
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
 		return m.listModels("", m.modelSeq, true)
 
+	case "/info":
+		m.appendLine(dimStyle.Render(m.infoLines()))
+		return nil
+
 	case "/compact":
 		return m.compact()
 
@@ -758,9 +765,33 @@ func (m *chatModel) command(line string) tea.Cmd {
 		return m.debugCommand()
 
 	default:
-		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>, /compact" + debugCommands))
+		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>, /compact, /info" + debugCommands))
 		return nil
 	}
+}
+
+// infoLines renders the build story for the transcript - the same
+// fields the info command prints, in the transcript's dim style:
+// the release version stamped in at build time, the git revision
+// and build time the toolchain embeds, the Go version, and the
+// platform. A binary built without modules reports only its
+// version.
+func (m *chatModel) infoLines() string {
+	bi := buildinfo.Collect(m.version)
+	var sb strings.Builder
+	sb.WriteString("go-reins " + bi.Version)
+	if !bi.Available {
+		return sb.String()
+	}
+	if bi.Commit != "" {
+		sb.WriteString("\ncommit " + bi.Commit)
+	}
+	if bi.Built != "" {
+		sb.WriteString("\nbuilt " + bi.Built)
+	}
+	sb.WriteString("\ngo " + bi.Go)
+	sb.WriteString("\nplatform " + bi.Platform)
+	return sb.String()
 }
 
 // layout recomputes the viewport height from the window size and
