@@ -4,9 +4,12 @@ package search
 
 import "os"
 
-// openNoBlock opens path the portable way. Platforms without
-// O_NONBLOCK have no FIFO park in the first place (named pipes
-// behave differently), so a plain open is the best available.
-func openNoBlock(path string) (*os.File, error) {
+// openForSearch opens a file the walk already vetted. This is the
+// portable fallback: it cannot request O_NONBLOCK, so the
+// nonblocking guarantee holds only where the Unix implementation
+// is compiled in - the stat-regular and SameFile checks after the
+// open still guard what is read, but the open itself may block on
+// a swapped special file.
+func openForSearch(path string) (*os.File, error) {
 	return os.Open(path)
 }

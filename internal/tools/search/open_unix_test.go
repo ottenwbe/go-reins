@@ -4,19 +4,20 @@ package search
 
 import (
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// TestOpenNoBlockDoesNotParkOnFIFO pins the reason openNoBlock
+// TestOpenForSearchDoesNotParkOnFIFO pins the reason openForSearch exists
 // exists: opening a FIFO must return immediately instead of
 // waiting for a writer. The test fails by hanging (the go test
 // timeout turns that into a failure), so a regression to a plain
 // os.Open shows up here, not as a stuck agent in the field.
-func TestOpenNoBlockDoesNotParkOnFIFO(t *testing.T) {
+func TestOpenForSearchDoesNotParkOnFIFO(t *testing.T) {
 	dir := t.TempDir()
-	fifo := dir + "/pipe"
+	fifo := filepath.Join(dir, "pipe")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
@@ -26,7 +27,7 @@ func TestOpenNoBlockDoesNotParkOnFIFO(t *testing.T) {
 	go func() {
 		defer close(done)
 		var f *os.File
-		f, err = openNoBlock(fifo)
+		f, err = openForSearch(fifo)
 		if f != nil {
 			f.Close()
 		}
@@ -34,7 +35,7 @@ func TestOpenNoBlockDoesNotParkOnFIFO(t *testing.T) {
 	select {
 	case <-done:
 		if err != nil {
-			t.Fatalf("openNoBlock: %v", err)
+			t.Fatalf("openForSearch: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("open on a FIFO blocked - the search can be parked by a swapped file")

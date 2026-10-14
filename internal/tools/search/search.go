@@ -338,7 +338,7 @@ func collect(ctx context.Context, pattern []string, visit func(rel string, info 
 // partial: the query saw only its first matchLineLen bytes, and
 // the observation says so. Cancellation is honored between lines.
 func grepInto(ctx context.Context, path string, info fs.FileInfo, re *regexp.Regexp, res *results) (bool, error) {
-	f, err := openNoBlock(path)
+	f, err := openForSearch(path)
 	if err != nil {
 		return false, fmt.Errorf("open %s: %w", path, err)
 	}
