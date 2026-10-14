@@ -55,5 +55,5 @@ func chatSession(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return tui.Chat(a, gate, feed, stream, "go-reins chat", switchBackend)
+	return tui.Chat(a, gate, feed, stream, version, "go-reins chat", switchBackend)
 }

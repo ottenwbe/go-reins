@@ -5,6 +5,12 @@ for understanding how agent tooling is built: a small agent loop that
 talks to local inference backends (Ollama, llama.cpp) through a
 swappable interface, with tools the operator can configure and gate.
 
+This code base was built with the help of AI coding agents, with the
+explicit purpose of testing their limits. The commits, pull requests,
+and reviews in this repository are the record of that experiment:
+what was attempted, what held up under review, and what had to be
+fixed along the way.
+
 ## Agent vs. harness
 
 - **Agent** — the LLM in a loop that decides what to do next (reason,
@@ -79,6 +85,7 @@ Slash commands manage the live session and never reach the model:
 | `/model <name>` | switch the model, validated against the listing |
 | `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
 | `/compact` | ask the model to summarize the session and replace the history with the summary |
+| `/info` | print this binary's build info in the transcript |
 | `/debug` | toggle the state overlay (debug builds only, below) |
 
 The header line always shows the backend and model the next request
