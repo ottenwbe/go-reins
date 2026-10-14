@@ -1118,7 +1118,29 @@ func TestChatInfoCommand(t *testing.T) {
 	if !strings.Contains(logged, "platform ") {
 		t.Errorf("platform missing from /info:\n%s", logged)
 	}
+	if !strings.Contains(logged, "module go-reins (") {
+		t.Errorf("module metadata missing from /info:\n%s", logged)
+	}
 	if m.state != chatReady {
 		t.Errorf("state = %v, want chatReady", m.state)
+	}
+}
+
+func TestShortenPreservesUTF8Boundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		n    int
+		want string
+	}{
+		{name: "cut before multibyte rune", text: "aéz", n: 2, want: "a…"},
+		{name: "cut after multibyte rune", text: "aéz", n: 3, want: "aé…"},
+		{name: "keep complete string", text: "aéz", n: 4, want: "aéz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shorten(tc.text, tc.n); got != tc.want {
+				t.Errorf("shorten(%q, %d) = %q, want %q", tc.text, tc.n, got, tc.want)
+			}
+		})
 	}
 }
