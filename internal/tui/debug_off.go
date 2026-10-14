@@ -21,3 +21,6 @@ func (m *chatModel) debugCommand() tea.Cmd {
 
 // debugOverlay has nothing to render in this build.
 func (m *chatModel) debugOverlay() string { return "" }
+
+// debugMsg never logs in this build: no overlay, no event log.
+func (m *chatModel) debugMsg(tea.Msg) {}

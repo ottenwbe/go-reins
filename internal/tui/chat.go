@@ -173,6 +173,10 @@ func (m *chatModel) Init() tea.Cmd {
 }
 
 func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// With the debug overlay on (debugui build only), every message
+	// leaves a trace in the transcript before its effect - including
+	// the ones the state guards below drop, which is the point.
+	m.debugMsg(msg)
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
