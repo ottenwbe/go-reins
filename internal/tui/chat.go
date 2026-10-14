@@ -172,175 +172,226 @@ func (m *chatModel) Init() tea.Cmd {
 	return m.textarea.Focus()
 }
 
+// Update is the single entry point bubbletea calls with every
+// message; it traces the message for the debug overlay and hands it
+// to the handler for its type. One handler per message type keeps
+// each state transition readable on its own; the handlers mutate
+// the model in place, so the returned model is always m.
 func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// With the debug overlay on (debugui build only), every message
+	// leaves a trace in the transcript before its effect - including
+	// the ones the state guards below drop, which is the point.
+	m.debugMsg(msg)
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.viewport.SetWidth(msg.Width)
-		m.textarea.SetWidth(msg.Width)
-		m.layout()
-		return m, nil
-
+		return m, m.updateWindowSize(msg)
 	case ToolEvent:
-		// A tool event from a step that already ended (racing the
-		// final answer) is noise: drop it instead of reviving the
-		// status line and arming a new waiter while idle.
-		if m.state != chatBusy {
-			return m, nil
-		}
-		// The agent switched tools; show it and keep listening.
-		m.tool = msg
-		return m, m.feed.WaitOn(m.step.done)
-
+		return m, m.updateToolEvent(msg)
 	case StreamEvent:
-		// A delta from a step that already ended is noise: drop it
-		// instead of reviving the transcript and arming a new
-		// waiter while idle. A delta while the operator decides a
-		// tool call belongs to the running step - prose the model
-		// streamed before the call - so it keeps the forming line
-		// growing and the waiter armed; dropping it there would
-		// kill the wait chain and freeze the rest of the reply.
-		if m.state != chatBusy && m.state != chatApproving {
-			return m, nil
-		}
-		m.live = appendLive(m.live, msg.Delta)
-		m.refreshTranscript()
-		return m, m.stream.WaitOn(m.step.done)
-
+		return m, m.updateStreamEvent(msg)
 	case stepDoneMsg:
-		// The step is over: cancel its waiters so they cannot
-		// linger into the next prompt, drop whatever the observer
-		// wrote in the race window around the step's end so it
-		// cannot be attributed to the next reply, then show the
-		// outcome. The state settles before the outcome is
-		// appended so the rerender drops the forming line - the
-		// final answer replaces it in the same spot.
-		m.step.cancel()
-		m.step = nil
-		if m.stream != nil {
-			m.stream.Discard()
-		}
-		m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
-		if msg.err != nil {
-			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
-		} else {
-			m.history = msg.res.History
-			m.appendLine(answerStyle.Render(msg.res.Answer))
-		}
-		return m, nil
-
+		return m, m.updateStepDone(msg)
 	case modelsDoneMsg:
-		// The listing from a /models or /backend command, or the
-		// validation behind a /model, arrived. One that raced a
-		// /backend switch describes a backend the session no
-		// longer uses: drop it, or a stale /model validation could
-		// set a name the new backend may not serve.
-		if msg.backend != m.agent.BackendName() {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
-			return m, nil
-		}
-		if msg.want != "" {
-			// Two /model commands against the same backend can
-			// have their listings finish out of order: apply
-			// only the newest generation, or an older listing
-			// landing last would override the operator's later
-			// choice.
-			if msg.seq != m.modelSeq {
-				return m, nil
-			}
-			if m.applyModel(msg.want, msg.names) {
-				// A real selection settles the model for this
-				// generation; a refusal or a busy deferral
-				// does not, and must leave the switch's
-				// fallback free to act.
-				m.appliedSeq = msg.seq
-			}
-			return m, nil
-		}
-		if len(msg.names) == 0 {
-			m.appendLine(dimStyle.Render("(the backend reported no models)"))
-			return m, nil
-		}
-		m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
-		// The switch's follow-up reconciles only when no newer
-		// /model actually selected a model: a command that was
-		// refused never decided anything, and suppressing the
-		// fallback then would leave the session on a model this
-		// backend does not serve. The names still print above -
-		// they are information, not a decision.
-		if msg.switched && msg.seq > m.appliedSeq {
-			m.reconcileModel(msg.names)
-			m.appliedSeq = msg.seq
-		}
-		return m, nil
-
+		return m, m.updateModelsDone(msg)
 	case ApprovalRequest:
-		m.approval, m.state = &msg, chatApproving
-		m.appendLine(toolStyle.Render("tool call: " + msg.Tool + " " + msg.Args))
-		return m, nil
-
+		return m, m.updateApprovalRequest(msg)
 	case spinner.TickMsg:
-		if m.state == chatBusy {
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
+		return m, m.updateSpinnerTick(msg)
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "ctrl+c":
-			m.cancel()
-			m.gate.Close()
-			m.feed.Close()
-			if m.stream != nil {
-				m.stream.Close()
-			}
-			m.step.cancel()
-			return m, tea.Quit
-		}
-		switch m.state {
-		case chatApproving:
-			switch msg.String() {
-			case "y", "Y", "enter":
-				m.appendLine(dimStyle.Render("allowed"))
-				m.approval.Reply <- true
-				m.approval, m.state = nil, chatBusy
-				return m, m.gate.WaitOn(m.step.done)
-			case "n", "N", "esc":
-				m.appendLine(dimStyle.Render("denied"))
-				m.approval.Reply <- false
-				m.approval, m.state = nil, chatBusy
-				return m, m.gate.WaitOn(m.step.done)
-			}
-			return m, nil
-		case chatBusy:
-			return m, nil // swallow keys while the agent works
-		}
-		if msg.String() == "enter" {
-			return m, m.submit()
-		}
-		// Scrolling keys go to the transcript, everything else to
-		// the input area.
-		switch msg.String() {
-		case "pgup", "pgdown", "home", "end":
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
-		}
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		m.layout() // the input may have grown or shrunk a line
-		return m, cmd
+		return m, m.updateKey(msg)
 	}
 
 	// Non-key messages keep the textarea cursor blinking.
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
 	return m, cmd
+}
+
+// updateWindowSize applies a new terminal size to the transcript
+// and the input area.
+func (m *chatModel) updateWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
+	m.width, m.height = msg.Width, msg.Height
+	m.viewport.SetWidth(msg.Width)
+	m.textarea.SetWidth(msg.Width)
+	m.layout()
+	return nil
+}
+
+// updateToolEvent shows the tool the running step is using and
+// keeps the feed listening. A tool event from a step that already
+// ended (racing the final answer) is noise: drop it instead of
+// reviving the status line and arming a new waiter while idle.
+func (m *chatModel) updateToolEvent(msg ToolEvent) tea.Cmd {
+	if m.state != chatBusy {
+		return nil
+	}
+	m.tool = msg
+	return m.feed.WaitOn(m.step.done)
+}
+
+// updateStreamEvent grows the forming reply in the transcript. A
+// delta from a step that already ended is noise: drop it instead
+// of reviving the transcript and arming a new waiter while idle. A
+// delta while the operator decides a tool call belongs to the
+// running step - prose the model streamed before the call - so it
+// keeps the forming line growing and the waiter armed; dropping it
+// there would kill the wait chain and freeze the rest of the reply.
+func (m *chatModel) updateStreamEvent(msg StreamEvent) tea.Cmd {
+	if m.state != chatBusy && m.state != chatApproving {
+		return nil
+	}
+	m.live = appendLive(m.live, msg.Delta)
+	m.refreshTranscript()
+	return m.stream.WaitOn(m.step.done)
+}
+
+// updateStepDone settles the finished step: cancel its waiters so
+// they cannot linger into the next prompt, drop whatever the
+// observer wrote in the race window around the step's end so it
+// cannot be attributed to the next reply, then show the outcome.
+// The state settles before the outcome is appended so the rerender
+// drops the forming line - the final answer replaces it in the
+// same spot.
+func (m *chatModel) updateStepDone(msg stepDoneMsg) tea.Cmd {
+	m.step.cancel()
+	m.step = nil
+	if m.stream != nil {
+		m.stream.Discard()
+	}
+	m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
+	m.layout() // the input area returns: the textarea replaces the pause line
+	if msg.err != nil {
+		m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
+	} else {
+		m.history = msg.res.History
+		m.appendLine(answerStyle.Render(msg.res.Answer))
+	}
+	return nil
+}
+
+// updateModelsDone settles a listing from a /models or /backend
+// command, or the validation behind a /model. One that raced a
+// /backend switch describes a backend the session no longer uses:
+// drop it, or a stale /model validation could set a name the new
+// backend may not serve.
+func (m *chatModel) updateModelsDone(msg modelsDoneMsg) tea.Cmd {
+	if msg.backend != m.agent.BackendName() {
+		return nil
+	}
+	if msg.err != nil {
+		m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
+		return nil
+	}
+	if msg.want != "" {
+		// Two /model commands against the same backend can have
+		// their listings finish out of order: apply only the newest
+		// generation, or an older listing landing last would
+		// override the operator's later choice.
+		if msg.seq != m.modelSeq {
+			return nil
+		}
+		if m.applyModel(msg.want, msg.names) {
+			// A real selection settles the model for this
+			// generation; a refusal or a busy deferral does not,
+			// and must leave the switch's fallback free to act.
+			m.appliedSeq = msg.seq
+		}
+		return nil
+	}
+	if len(msg.names) == 0 {
+		m.appendLine(dimStyle.Render("(the backend reported no models)"))
+		return nil
+	}
+	m.appendLine(dimStyle.Render(strings.Join(msg.names, "\n")))
+	// The switch's follow-up reconciles only when no newer /model
+	// actually selected a model: a command that was refused never
+	// decided anything, and suppressing the fallback then would
+	// leave the session on a model this backend does not serve.
+	// The names still print above - they are information, not a
+	// decision.
+	if msg.switched && msg.seq > m.appliedSeq {
+		m.reconcileModel(msg.names)
+		m.appliedSeq = msg.seq
+	}
+	return nil
+}
+
+// updateApprovalRequest parks the running step for the operator's
+// decision.
+func (m *chatModel) updateApprovalRequest(msg ApprovalRequest) tea.Cmd {
+	m.approval, m.state = &msg, chatApproving
+	m.layout() // the input area pauses for the decision
+	m.appendLine(toolStyle.Render("tool call: " + msg.Tool + " " + msg.Args))
+	return nil
+}
+
+// updateSpinnerTick animates the spinner while a step runs; in any
+// other state the tick dies out and the spinner stops animating.
+func (m *chatModel) updateSpinnerTick(msg spinner.TickMsg) tea.Cmd {
+	if m.state == chatBusy {
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return cmd
+	}
+	return nil
+}
+
+// updateKey routes one keystroke by state: ctrl+c always quits; an
+// approval consumes y/n; a running step swallows everything;
+// otherwise enter submits, scroll keys reach the transcript, and
+// typing goes to the input area.
+func (m *chatModel) updateKey(msg tea.KeyPressMsg) tea.Cmd {
+	if msg.String() == "ctrl+c" {
+		m.cancel()
+		m.gate.Close()
+		m.feed.Close()
+		if m.stream != nil {
+			m.stream.Close()
+		}
+		m.step.cancel()
+		return tea.Quit
+	}
+	switch m.state {
+	case chatApproving:
+		return m.updateApprovalKey(msg)
+	case chatBusy:
+		return nil // swallow keys while the agent works
+	}
+	if msg.String() == "enter" {
+		return m.submit()
+	}
+	// Scrolling keys go to the transcript, everything else to the
+	// input area.
+	switch msg.String() {
+	case "pgup", "pgdown", "home", "end":
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return cmd
+	}
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	m.layout() // the input may have grown or shrunk a line
+	return cmd
+}
+
+// updateApprovalKey answers the pending tool call - allow on
+// y/enter, deny on n/esc - and hands the step back to busy, with
+// the gate listening for the next request.
+func (m *chatModel) updateApprovalKey(msg tea.KeyPressMsg) tea.Cmd {
+	var allow bool
+	switch msg.String() {
+	case "y", "Y", "enter":
+		allow = true
+		m.appendLine(dimStyle.Render("allowed"))
+	case "n", "N", "esc":
+		m.appendLine(dimStyle.Render("denied"))
+	default:
+		return nil
+	}
+	m.approval.Reply <- allow
+	m.approval, m.state = nil, chatBusy
+	m.layout() // still paused, but the decision settled
+	return m.gate.WaitOn(m.step.done)
 }
 
 // shorten caps the rendered args to a single status line; tool-call
@@ -390,6 +441,7 @@ func (m *chatModel) submit() tea.Cmd {
 	m.layout() // the input shrank back to one line
 	m.tool = ToolEvent{}
 	m.state = chatBusy
+	m.layout() // the input area pauses for the step
 
 	// One waiter per channel, scoped to this step: cancel any scope
 	// left over from an earlier step, then arm fresh waits that die
@@ -596,10 +648,14 @@ func (m *chatModel) command(line string) tea.Cmd {
 	}
 }
 
-// layout recomputes the viewport height from the window size and the
-// current input area height.
+// layout recomputes the viewport height from the window size and
+// the current input area height: the textarea while the REPL is
+// ready, the single pause line while it is not.
 func (m *chatModel) layout() {
-	input := lipgloss.Height(m.textarea.View())
+	input := 1 // the paused input is one line
+	if m.state == chatReady {
+		input = lipgloss.Height(m.textarea.View())
+	}
 	h := m.height - lipgloss.Height(m.headerText()) - input - 4
 	if h < 1 {
 		h = 1
@@ -640,9 +696,21 @@ func (m *chatModel) View() tea.View {
 		sb.WriteString(m.debugOverlay())
 	}
 	sb.WriteString("\n\n")
-	sb.WriteString(m.textarea.View())
+	sb.WriteString(m.inputView())
 
 	v := tea.NewView(sb.String())
 	v.AltScreen = true
 	return v
+}
+
+// inputView renders the input area: the textarea while the REPL
+// accepts prompts, and a one-line pause note while it does not -
+// the agent working or an approval pending means keystrokes are
+// swallowed, and a focused-looking input that ignores typing
+// reads as broken instead of busy.
+func (m *chatModel) inputView() string {
+	if m.state != chatReady {
+		return dimStyle.Render("(input paused · ctrl+c aborts)")
+	}
+	return m.textarea.View()
 }

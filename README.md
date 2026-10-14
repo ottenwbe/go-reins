@@ -35,11 +35,13 @@ call asks for confirmation before it runs.
 ./go-reins run --backend llamacpp --model qwen2.5 "hello"
 ```
 
-In a terminal, `run` shows a bubbletea view: a spinner while the
-model works, an approval dialog (`y`/`n`) on each mutating tool
-call, and the answer as the final frame. Two flags report on the
-completed task: `--turns` (how many round trips it took) and
-`--history` (dump the full conversation with roles, to stderr).
+In a terminal, `run` shows a bubbletea view: the answer forming
+under the spinner as it streams in, an approval dialog (`y`/`n`)
+on each mutating tool call, and the complete answer as the final
+frame. Two flags report on the completed task: `--turns` (how many
+round trips it took) and `--history` (dump the full conversation
+with roles, to stderr). `--no-stream` restores the buffered
+behavior: a plain spinner until the reply is complete.
 
 Piped into something else, `run` switches to the scriptable path:
 the answer on stdout, prompts and diagnostics on stderr, tool
@@ -63,8 +65,11 @@ auto-approval with `--yes`; it is never the default.
 A REPL with a scrolling transcript, a multi-line input area (enter
 sends, ctrl+j inserts a newline), approval dialogs, and a status
 line that shows which tool the agent is using while it works. The
-conversation persists across prompts for the whole session; ctrl+c
-quits. Requires a terminal.
+reply forms in the transcript itself as it streams in, and the
+input area pauses while the agent works or an approval pends -
+keystrokes are swallowed in those states, and the pause note says
+so instead of a silent input. The conversation persists across
+prompts for the whole session; ctrl+c quits. Requires a terminal.
 
 Slash commands manage the live session and never reach the model:
 
@@ -73,6 +78,7 @@ Slash commands manage the live session and never reach the model:
 | `/models` | list the models the current backend can serve |
 | `/model <name>` | switch the model, validated against the listing |
 | `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
+| `/debug` | toggle the state overlay (debug builds only, below) |
 
 The header line always shows the backend and model the next request
 will use. A backend switch keeps the conversation history — messages
@@ -128,6 +134,7 @@ standard cobra `completion` command.
 | `--model` | `GO_REINS_MODEL` | `gemma4` | model name, e.g. `gemma4` or `llama3.2` |
 | `--url` | `GO_REINS_URL` | per-backend default | backend base URL (validated at startup) |
 | `--yes` | `GO_REINS_YES` | `false` | auto-approve tool calls |
+| `--no-stream` | `GO_REINS_NO_STREAM` | `false` | disable streamed replies in the interactive views |
 | `--tools` | `GO_REINS_TOOLS` | all tools | comma-separated tools to load, e.g. `read,shell`; an empty list loads none |
 | `--tool-risk` | `GO_REINS_TOOL_RISK` | tool's own tier | per-tool risk override, e.g. `shell=read-only` (`read-only`, `mutating`) |
 | `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
@@ -184,15 +191,24 @@ seams, the agent loop, and the dependency diagram — lives in
 
 ```sh
 make build          # build with a freshly generated SBOM embedded
-make check          # gofmt gate + vet + tests + SBOM freshness (what CI runs)
+make build-debug    # same, with the chat /debug overlay compiled in (-tags debugui)
+make check          # gofmt gate + vet + tests (both build flavors) + SBOM freshness (what CI runs)
 make fmt            # rewrite sources in gofmt style
-make test           # go test ./...
+make test           # go test ./... plus the debugui flavor of the TUI package
 make licenses       # build, then list dependency licenses
 ```
 
 `make build` also stamps a version into the binary (`go-reins info`
 reports it): `git describe` output by default, or an explicit `make
-build VERSION=1.0.0`.
+build VERSION=1.0.0`. Debug builds carry a `-debug` version suffix.
+
+The `/debug` overlay is a build-time feature: only a `debugui` build
+offers it, and a plain build neither shows it nor mentions it. With
+the overlay on, the status area shows the chat state machine
+(ready/busy/approving, armed step waiters, live reply size) and the
+transcript logs every message the view receives - including the
+ones its state guards drop, which is exactly what makes
+hard-to-reproduce UI bugs visible.
 
 Tests cover the agent loop (fake backend), both adapters
 (`httptest` servers), the shared HTTP plumbing, config resolution
@@ -213,7 +229,9 @@ request: the same gate locally and in CI.
 - [x] `read` tool with risk-tiered approvals and configurable tool loading
 - [x] Licenses command, embedded CycloneDX SBOM, build provenance (`info`)
 - [x] `--max-turns` flag
-- [ ] Streaming responses
+- [x] Streaming responses: backends stream on one wire path, the
+      chat transcript shows the reply forming, truncated streams
+      are rejected
 - [ ] `search` tool (glob + grep, read-only) and `edit` tool with
       diff approval in the TUI
 - [ ] More backends (OpenAI-compatible cloud APIs)
