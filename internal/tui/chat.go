@@ -96,7 +96,7 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *St
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ta := textarea.New()
-	ta.Placeholder = "type a task or /models, /model, /backend, /debug · ctrl+j for a new line · ctrl+c quits"
+	ta.Placeholder = "type a task or /models, /model, /backend" + debugCommands + " · ctrl+j for a new line · ctrl+c quits"
 	ta.ShowLineNumbers = true
 	ta.Prompt = "› "
 	ta.MaxHeight = 5
@@ -586,19 +586,12 @@ func (m *chatModel) command(line string) tea.Cmd {
 		return m.listModels("", m.modelSeq, true)
 
 	case "/debug":
-		// A view into the state machine for hands-on testing: the
-		// overlay lives in the status area and costs nothing when
-		// off.
-		m.debug = !m.debug
-		if m.debug {
-			m.appendLine(dimStyle.Render("debug overlay on"))
-		} else {
-			m.appendLine(dimStyle.Render("debug overlay off"))
-		}
-		return nil
+		// Compiled in only with -tags debugui; the off build's
+		// handler says so instead of offering a toggle.
+		return m.debugCommand()
 
 	default:
-		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>, /debug"))
+		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>" + debugCommands))
 		return nil
 	}
 }
@@ -644,17 +637,7 @@ func (m *chatModel) View() tea.View {
 		sb.WriteString(dimStyle.Render("enter to send · ctrl+j new line · pgup/pgdown scroll · ctrl+c quit"))
 	}
 	if m.debug {
-		// The state overlay: what the REPL is waiting for, whether
-		// a step's waiters are armed, and how much live text the
-		// forming line holds. It reads the model on every frame,
-		// so the spinner keeps it fresh even between deltas.
-		step := "none"
-		if m.step != nil {
-			step = "armed"
-		}
-		sb.WriteString("\n")
-		sb.WriteString(dimStyle.Render(fmt.Sprintf(
-			"[debug] state=%s step=%s live=%d chars", m.state, step, len(m.live))))
+		sb.WriteString(m.debugOverlay())
 	}
 	sb.WriteString("\n\n")
 	sb.WriteString(m.textarea.View())

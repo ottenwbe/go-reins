@@ -17,7 +17,9 @@ Working conventions for anyone (human or AI) changing this repository.
 - Vet: `go vet ./...`
 - Test: `go test ./...` (no live backend needed; tests use fakes and
   `httptest` servers)
-- `make` wraps all of these: `make build`, `make test`, `make vet`,
+- `make` wraps all of these: `make build`, `make build-debug` (chat
+  `/debug` overlay compiled in via `-tags debugui`; the default
+  build omits it entirely), `make test`, `make vet`,
   `make fmt`, `make check` (gofmt check + vet + test + SBOM freshness),
   `make licenses`, and `make check` (gofmt + vet + tests + SBOM freshness gate)
   SBOM — run it whenever go.mod changes)
