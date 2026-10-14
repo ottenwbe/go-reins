@@ -78,6 +78,7 @@ Slash commands manage the live session and never reach the model:
 | `/models` | list the models the current backend can serve |
 | `/model <name>` | switch the model, validated against the listing |
 | `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
+| `/compact` | ask the model to summarize the session and replace the history with the summary |
 | `/debug` | toggle the state overlay (debug builds only, below) |
 
 The header line always shows the backend and model the next request

@@ -972,3 +972,125 @@ func TestChatInputPausedWhileBusy(t *testing.T) {
 		t.Errorf("view after step still shows the pause note: %q", view)
 	}
 }
+
+// TestChatCompact verifies the /compact round trip: the command
+// asks the backend for a summary, and the result collapses the
+// history to the system message plus one summary-carrying user
+// message, with the shrinkage noted in the transcript. A prompt
+// afterwards continues from the compacted history.
+func TestChatCompact(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "the summary"}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	m.history = []backend.Message{
+		{Role: backend.RoleSystem, Content: "sys"},
+		{Role: backend.RoleUser, Content: "question one"},
+		{Role: backend.RoleAssistant, Content: "a very long answer that would bloat the context"},
+		{Role: backend.RoleUser, Content: "question two"},
+		{Role: backend.RoleAssistant, Content: "another long answer"},
+	}
+
+	m, cmd := runCommand(m, "/compact")
+	if m.state != chatBusy || !m.compacting {
+		t.Fatalf("state after /compact = %v compacting=%v, want busy compaction", m.state, m.compacting)
+	}
+	if cmd == nil {
+		t.Fatal("/compact did not arm its round trip")
+	}
+	if !strings.Contains(m.View().Content, "compacting…") {
+		t.Errorf("status line should show the compaction:\n%s", m.View().Content)
+	}
+
+	// The round trip lands: the history collapses, the transcript
+	// notes it, the input area returns. The command arms a batch
+	// (the round trip plus the spinner tick); find the result.
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("compact Cmd returned %T, want a batch", cmd())
+	}
+	var done compactDoneMsg
+	found := false
+	for _, c := range batch {
+		if m2 := c(); m2 != nil {
+			if d, ok := m2.(compactDoneMsg); ok {
+				done = d
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("compact batch carried no compactDoneMsg")
+	}
+	if done.summary != "the summary" {
+		t.Errorf("summary = %q, want the backend's reply", done.summary)
+	}
+	next, _ := m.Update(done)
+	m = next.(*chatModel)
+	if m.state != chatReady || m.compacting {
+		t.Errorf("state after compaction = %v compacting=%v, want ready", m.state, m.compacting)
+	}
+	if len(m.history) != 2 {
+		t.Fatalf("history length = %d, want 2 (system + summary)", len(m.history))
+	}
+	if m.history[0].Role != backend.RoleSystem {
+		t.Errorf("history[0] role = %v, want the system message kept", m.history[0].Role)
+	}
+	if m.history[1].Role != backend.RoleUser || !strings.Contains(m.history[1].Content, "the summary") {
+		t.Errorf("history[1] = %+v, want a user message carrying the summary", m.history[1])
+	}
+	logged := strings.Join(m.lines, "\n")
+	if !strings.Contains(logged, "history compacted: 5 messages") {
+		t.Errorf("transcript missing the compaction note:\n%s", logged)
+	}
+}
+
+// TestChatCompactKeepsHistoryOnFailure pins the safety of the
+// command: an empty conversation is not compacted at all, and an
+// error or empty summary leaves the history exactly as it was.
+func TestChatCompactKeepsHistoryOnFailure(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "unused"}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	// Nothing to compact yet.
+	m, cmd := runCommand(m, "/compact")
+	if cmd != nil {
+		t.Error("empty conversation should not start a round trip")
+	}
+	if m.state != chatReady {
+		t.Errorf("state = %v, want chatReady", m.state)
+	}
+
+	// A failed round trip leaves the history untouched.
+	m.history = []backend.Message{
+		{Role: backend.RoleSystem, Content: "sys"},
+		{Role: backend.RoleUser, Content: "q"},
+		{Role: backend.RoleAssistant, Content: "a"},
+	}
+	m, cmd = runCommand(m, "/compact")
+	next, _ := m.Update(compactDoneMsg{err: errors.New("backend down")})
+	m = next.(*chatModel)
+	if len(m.history) != 3 || m.state != chatReady {
+		t.Errorf("error compaction changed state: history=%d state=%v", len(m.history), m.state)
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "backend down") {
+		t.Error("compaction error missing from the transcript")
+	}
+
+	// An empty summary is a failure, not a wipe.
+	m, cmd = runCommand(m, "/compact")
+	if cmd == nil {
+		t.Fatal("second /compact should arm a round trip")
+	}
+	next, _ = m.Update(compactDoneMsg{summary: "   "})
+	m = next.(*chatModel)
+	if len(m.history) != 3 {
+		t.Errorf("empty summary wiped the history: %d messages", len(m.history))
+	}
+	if !strings.Contains(strings.Join(m.lines, "\n"), "empty summary") {
+		t.Error("empty-summary note missing from the transcript")
+	}
+}
