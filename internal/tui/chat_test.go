@@ -922,3 +922,53 @@ func TestChatStreamsAcrossApproval(t *testing.T) {
 		t.Errorf("final answer appears %d times, want 1", got)
 	}
 }
+
+// TestChatInputPausedWhileBusy verifies the input area is hidden
+// while the REPL cannot accept typing: a pause note replaces the
+// textarea for a running step and a pending approval, and the
+// textarea returns when the step ends.
+func TestChatInputPausedWhileBusy(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	// Ready: the textarea with its placeholder is the input area.
+	// The placeholder's tail ("quits") is the anchor: the block
+	// cursor ANSI-splits its first character.
+	if view := m.View().Content; !strings.Contains(view, "quits") || strings.Contains(view, "input paused") {
+		t.Errorf("ready view lacks the input area: %q", view)
+	}
+
+	// A running step pauses the input.
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	view := m.View().Content
+	if !strings.Contains(view, "input paused") {
+		t.Errorf("busy view lacks the pause note: %q", view)
+	}
+	if strings.Contains(view, "quits") {
+		t.Errorf("busy view still shows the textarea: %q", view)
+	}
+
+	// An approval keeps it paused.
+	reply := make(chan bool, 1)
+	next, _ = m.Update(ApprovalRequest{Tool: "read", Args: "{}", Reply: reply})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "input paused") {
+		t.Errorf("approving view lacks the pause note: %q", m.View().Content)
+	}
+
+	// The step ends: the textarea is back, the note is gone.
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "done"}})
+	m = next.(*chatModel)
+	view = m.View().Content
+	if !strings.Contains(view, "quits") {
+		t.Errorf("view after step lacks the textarea: %q", view)
+	}
+	if strings.Contains(view, "input paused") {
+		t.Errorf("view after step still shows the pause note: %q", view)
+	}
+}

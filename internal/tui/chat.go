@@ -225,6 +225,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stream.Discard()
 		}
 		m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
+		m.layout() // the input area returns: the textarea replaces the pause line
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
 		} else {
@@ -283,6 +284,7 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ApprovalRequest:
 		m.approval, m.state = &msg, chatApproving
+		m.layout() // the input area pauses for the decision
 		m.appendLine(toolStyle.Render("tool call: " + msg.Tool + " " + msg.Args))
 		return m, nil
 
@@ -313,11 +315,13 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendLine(dimStyle.Render("allowed"))
 				m.approval.Reply <- true
 				m.approval, m.state = nil, chatBusy
+				m.layout() // still paused, but the decision settled
 				return m, m.gate.WaitOn(m.step.done)
 			case "n", "N", "esc":
 				m.appendLine(dimStyle.Render("denied"))
 				m.approval.Reply <- false
 				m.approval, m.state = nil, chatBusy
+				m.layout() // still paused, but the decision settled
 				return m, m.gate.WaitOn(m.step.done)
 			}
 			return m, nil
@@ -394,6 +398,7 @@ func (m *chatModel) submit() tea.Cmd {
 	m.layout() // the input shrank back to one line
 	m.tool = ToolEvent{}
 	m.state = chatBusy
+	m.layout() // the input area pauses for the step
 
 	// One waiter per channel, scoped to this step: cancel any scope
 	// left over from an earlier step, then arm fresh waits that die
@@ -600,10 +605,14 @@ func (m *chatModel) command(line string) tea.Cmd {
 	}
 }
 
-// layout recomputes the viewport height from the window size and the
-// current input area height.
+// layout recomputes the viewport height from the window size and
+// the current input area height: the textarea while the REPL is
+// ready, the single pause line while it is not.
 func (m *chatModel) layout() {
-	input := lipgloss.Height(m.textarea.View())
+	input := 1 // the paused input is one line
+	if m.state == chatReady {
+		input = lipgloss.Height(m.textarea.View())
+	}
 	h := m.height - lipgloss.Height(m.headerText()) - input - 4
 	if h < 1 {
 		h = 1
@@ -644,9 +653,21 @@ func (m *chatModel) View() tea.View {
 		sb.WriteString(m.debugOverlay())
 	}
 	sb.WriteString("\n\n")
-	sb.WriteString(m.textarea.View())
+	sb.WriteString(m.inputView())
 
 	v := tea.NewView(sb.String())
 	v.AltScreen = true
 	return v
+}
+
+// inputView renders the input area: the textarea while the REPL
+// accepts prompts, and a one-line pause note while it does not -
+// the agent working or an approval pending means keystrokes are
+// swallowed, and a focused-looking input that ignores typing
+// reads as broken instead of busy.
+func (m *chatModel) inputView() string {
+	if m.state != chatReady {
+		return dimStyle.Render("(input paused · ctrl+c aborts)")
+	}
+	return m.textarea.View()
 }
