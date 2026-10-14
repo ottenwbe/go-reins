@@ -70,5 +70,11 @@ func (m *chatModel) debugMsg(msg tea.Msg) {
 		}
 	case modelsDoneMsg:
 		m.appendLine(dimStyle.Render("[debug] <- modelsDoneMsg backend=" + msg.backend))
+	case compactDoneMsg:
+		if msg.err != nil {
+			m.appendLine(dimStyle.Render("[debug] <- compactDoneMsg error"))
+		} else {
+			m.appendLine(dimStyle.Render(fmt.Sprintf("[debug] <- compactDoneMsg %d chars", len(msg.summary))))
+		}
 	}
 }
