@@ -88,8 +88,8 @@ func (s *Shell) Execute(ctx context.Context, args string) (string, error) {
 	// run waits for it long past the timeout. WaitDelay is the
 	// portable floor: past the grace the pipes close and the run
 	// returns no matter what still holds them.
-	cmd.SysProcAttr = procGroupAttr()
-	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
+	setProcessGroup(cmd)
+	cmd.Cancel = func() error { return killTree(cmd) }
 	cmd.WaitDelay = pipeGrace
 	err := cmd.Run()
 	// The run is over, but its process group may not be: a command
@@ -97,7 +97,7 @@ func (s *Shell) Execute(ctx context.Context, args string) (string, error) {
 	// the group so a gated tool call never leaks processes; a group
 	// that fully exited is already gone (killGroup tolerates ESRCH),
 	// and a command that means to detach can setsid its way out.
-	killGroup(cmd.Process.Pid)
+	killTree(cmd) // reap any survivors: no group, no leak
 	observation := out.String()
 
 	// The command exited on its own, but a background child held

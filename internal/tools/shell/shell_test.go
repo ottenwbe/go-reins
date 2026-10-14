@@ -101,3 +101,16 @@ func TestShellReportsCancellation(t *testing.T) {
 		t.Errorf("error = %v, want cancellation error", err)
 	}
 }
+
+// TestShellNeverStartedDoesNotPanic pins the guard on the kill
+// seam: a command that never started - an already-cancelled
+// context, a missing shell - has no process, and the post-run
+// cleanup must not dereference one. Fails by panicking.
+func TestShellNeverStartedDoesNotPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := New().Execute(ctx, `{"command":"echo hi"}`)
+	if err == nil {
+		t.Error("a cancelled context should fail the command")
+	}
+}

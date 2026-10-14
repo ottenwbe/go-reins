@@ -676,10 +676,10 @@ func (m *chatModel) View() tea.View {
 		sb.WriteString(m.spinner.View())
 		sb.WriteString(" ")
 		if m.tool.Name != "" {
-			sb.WriteString(toolStyle.Render(m.tool.Name))
+			sb.WriteString(toolStyle.Render(Sanitize(m.tool.Name)))
 			if m.tool.Args != "" {
 				sb.WriteString(" ")
-				sb.WriteString(dimStyle.Render(shorten(m.tool.Args, 60)))
+				sb.WriteString(dimStyle.Render(shorten(Sanitize(m.tool.Args), 60)))
 			}
 		} else if m.live == "" {
 			sb.WriteString(dimStyle.Render("thinking…"))

@@ -110,3 +110,29 @@ func TestChatTranscriptSanitizesAnswer(t *testing.T) {
 		t.Errorf("answer lost its readable text:\n%q", view)
 	}
 }
+
+// TestChatStatusLineSanitizesTool pins the last display path: the
+// busy status line shows the tool name and a shortened argument
+// snippet, both model-controlled, and a tool event carrying escape
+// sequences must not reach the terminal through it.
+func TestChatStatusLineSanitizesTool(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	stream := NewStreamFeed()
+	defer stream.Close()
+	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m.Init()
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+	m.state = chatBusy      // a step must be running for the tool line to show
+	m.step = newStepScope() // the re-arm needs a live scope
+
+	m.updateToolEvent(ToolEvent{Name: "read", Args: "\x1b[2Ahi"})
+	if view := m.View().Content; strings.Contains(view, "\x1b[2A") {
+		t.Errorf("forged cursor-up survived into the status line:\n%q", view)
+	}
+	if !strings.Contains(m.View().Content, "read") {
+		t.Errorf("status line lost the tool name:\n%q", m.View().Content)
+	}
+}
