@@ -348,3 +348,28 @@ func TestSearchReportsPartialLines(t *testing.T) {
 		t.Errorf("observation exceeds the byte budget: %d", len(out))
 	}
 }
+
+// TestSearchRejectsMalformedGlob pins the symmetry with the query:
+// a syntactically broken glob fails as an error, not as a silent
+// (no matches) that would read to the model as "nothing there".
+func TestSearchRejectsMalformedGlob(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "a.txt", "x")
+
+	for _, glob := range []string{`[.txt`, `a/[`} {
+		_, err := call(t, `{"glob":"`+glob+`"}`)
+		if err == nil {
+			t.Errorf("glob %q: want an error, got none", glob)
+		}
+	}
+
+	// Well-formed bracket classes still work.
+	out, err := call(t, `{"glob":"[ab].txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "a.txt") {
+		t.Errorf("valid bracket class should match:\n%s", out)
+	}
+}

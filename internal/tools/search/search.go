@@ -139,6 +139,7 @@ func (s *Search) Execute(ctx context.Context, args string) (string, error) {
 // stop: either cap running out marks the observation truncated.
 type results struct {
 	lines     []string
+	spent     int // bytes the rendered lines hold
 	limit     int
 	truncated bool
 	partial   bool
@@ -159,15 +160,12 @@ func (r *results) add(line string) bool {
 		r.truncated = true
 		return true
 	}
-	spent := 0
-	for _, l := range r.lines {
-		spent += len(l)
-	}
-	if spent+len(line) > r.budget {
+	if r.spent+len(line) > r.budget {
 		r.truncated = true
 		return true
 	}
 	r.lines = append(r.lines, line)
+	r.spent += len(line)
 	return false
 }
 
@@ -200,7 +198,10 @@ var errStopWalk = errors.New("stop walk")
 // patterns and any ".." segment are rejected outright — the walk
 // starts at the working directory root, so such a pattern could
 // never match anything anyway and is a caller mistake worth an
-// error rather than a silent empty result.
+// error rather than a silent empty result. Malformed pattern
+// syntax fails the same way a malformed query does: a bad glob
+// that silently matched nothing would read to the model as
+// "nothing there" instead of "bad pattern".
 func cleanGlob(glob string) ([]string, error) {
 	if glob == "" {
 		return nil, errors.New("empty glob: pass {\"glob\": \"...\"}")
@@ -212,6 +213,14 @@ func cleanGlob(glob string) ([]string, error) {
 	for _, seg := range pattern {
 		if seg == ".." {
 			return nil, fmt.Errorf("glob %s escapes the working directory", glob)
+		}
+		if seg == "**" {
+			continue
+		}
+		// filepath.Match reports ErrBadPattern no matter the name,
+		// so one probe per segment is a full syntax check.
+		if _, err := filepath.Match(seg, ""); err != nil {
+			return nil, fmt.Errorf("invalid glob %s: %w", glob, err)
 		}
 	}
 	return pattern, nil
@@ -297,7 +306,12 @@ func collect(ctx context.Context, pattern []string, visit func(rel string, info 
 		}
 		info, err := d.Info()
 		if err != nil {
-			return err
+			// A file deleted between the directory read and this
+			// stat is a race, not an operator mistake: skip the
+			// vanished entry instead of failing the whole search.
+			// Directory read errors stay loud - they say the tree
+			// itself cannot be walked.
+			return nil
 		}
 		stop, verr := visit(rel, info)
 		if verr != nil {
