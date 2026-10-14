@@ -11,7 +11,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_BUILD = go build -ldflags "-X go-reins/cmd.version=$(VERSION)" -o $(BINARY) .
 
 .DEFAULT_GOAL := help
-.PHONY: help build test vet fmt fmt-check check sbom-check licenses clean
+.PHONY: help build build-debug test vet fmt fmt-check check sbom-check licenses clean
 
 help: ## Show the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -21,8 +21,13 @@ build: ## Build the binary with a freshly generated SBOM embedded
 	go run . gen-sbom > internal/licenses/sbom.json
 	$(GO_BUILD)
 
-test: ## Run the full test suite
+build-debug: ## Build with the chat /debug overlay compiled in (-tags debugui)
+	go run . gen-sbom > internal/licenses/sbom.json
+	go build -tags debugui -ldflags "-X go-reins/cmd.version=$(VERSION)-debug" -o $(BINARY) .
+
+test: ## Run the full test suite, both build flavors of the tui
 	go test ./...
+	go test -tags debugui ./internal/tui/
 
 vet: ## Run go vet over all packages
 	go vet ./...

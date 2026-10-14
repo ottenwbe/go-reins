@@ -50,6 +50,7 @@ func init() {
 	flags.String("url", "", "backend base URL (defaults: ollama http://localhost:11434, llamacpp http://localhost:8080)")
 	flags.String("model", "gemma4", "model name, e.g. gemma4 or llama3.2")
 	flags.Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
+	flags.Bool("no-stream", false, "disable streamed replies in the interactive views (chat and run)")
 	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
 	flags.String("tools", "", "comma-separated tools to load, e.g. read,shell (default: all)")
 	flags.String("tool-risk", "", "per-tool risk override, e.g. shell=read-only (values: read-only, mutating)")

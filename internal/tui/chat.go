@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
@@ -26,6 +27,19 @@ const (
 	chatApproving                  // waiting for the operator's tool-call decision
 )
 
+// String names the state for the debug overlay.
+func (s chatState) String() string {
+	switch s {
+	case chatReady:
+		return "ready"
+	case chatBusy:
+		return "busy"
+	case chatApproving:
+		return "approving"
+	}
+	return "unknown"
+}
+
 // chatModel is the interactive REPL: a scrolling transcript, an input
 // area, and an approval dialog. Conversation history is carried from
 // prompt to prompt via agent.Step, so the model keeps its context
@@ -36,12 +50,14 @@ type chatModel struct {
 	agent         *agent.Agent
 	gate          *ApprovalGate
 	feed          *ToolFeed
+	stream        *StreamFeed             // may be nil: no observer wired, nothing armed
 	title         string                  // session line prefix; the live header appends backend/model
 	switchBackend func(name string) error // wires /backend to session.NewBackend
 	prompt        string                  // prompt of the running step, for the status line
 
 	history    []backend.Message
 	lines      []string
+	live       string // streamed reply of the running step, shown as a forming line in the transcript
 	viewport   viewport.Model
 	textarea   textarea.Model
 	spinner    spinner.Model
@@ -49,8 +65,9 @@ type chatModel struct {
 	approval   *ApprovalRequest
 	tool       ToolEvent // tool of the running step, for the status line
 	step       *stepScope
-	modelSeq   int // generation of the newest model-deciding command (/model, /backend); older results are dropped
-	appliedSeq int // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	modelSeq   int  // generation of the newest model-deciding command (/model, /backend); older results are dropped
+	appliedSeq int  // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	debug      bool // /debug: show the state overlay in the status area; off unless asked for
 	width      int
 	height     int
 }
@@ -75,11 +92,11 @@ func (s *stepScope) cancel() {
 	}
 }
 
-func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, title string, switchBackend func(string) error) *chatModel {
+func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, title string, switchBackend func(string) error) *chatModel {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ta := textarea.New()
-	ta.Placeholder = "type a task or /models, /model, /backend · ctrl+j for a new line · ctrl+c quits"
+	ta.Placeholder = "type a task or /models, /model, /backend" + debugCommands + " · ctrl+j for a new line · ctrl+c quits"
 	ta.ShowLineNumbers = true
 	ta.Prompt = "› "
 	ta.MaxHeight = 5
@@ -118,6 +135,7 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, title stri
 		agent:         a,
 		gate:          gate,
 		feed:          feed,
+		stream:        stream,
 		title:         title,
 		switchBackend: switchBackend,
 		viewport:      viewport.New(),
@@ -131,11 +149,16 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, title stri
 // screen is requested by the View itself (v2 models declare terminal
 // state there); the transcript lives only as long as the session.
 // The feed receives the agent's tool calls, so the status line can
-// show which tool is in use. switchBackend (may be nil) connects
+// show which tool is in use; the stream feed (may be nil) receives
+// the reply text as it arrives, so the answer forms in the
+// transcript itself. switchBackend (may be nil) connects
 // the /backend command to the config-backed backend constructors.
-func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, title string, switchBackend func(string) error) error {
+func Chat(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *StreamFeed, title string, switchBackend func(string) error) error {
 	defer feed.Close()
-	_, err := tea.NewProgram(newChatModel(a, gate, feed, title, switchBackend)).Run()
+	if stream != nil {
+		defer stream.Close()
+	}
+	_, err := tea.NewProgram(newChatModel(a, gate, feed, stream, title, switchBackend)).Run()
 	return err
 }
 
@@ -169,18 +192,41 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tool = msg
 		return m, m.feed.WaitOn(m.step.done)
 
+	case StreamEvent:
+		// A delta from a step that already ended is noise: drop it
+		// instead of reviving the transcript and arming a new
+		// waiter while idle. A delta while the operator decides a
+		// tool call belongs to the running step - prose the model
+		// streamed before the call - so it keeps the forming line
+		// growing and the waiter armed; dropping it there would
+		// kill the wait chain and freeze the rest of the reply.
+		if m.state != chatBusy && m.state != chatApproving {
+			return m, nil
+		}
+		m.live = appendLive(m.live, msg.Delta)
+		m.refreshTranscript()
+		return m, m.stream.WaitOn(m.step.done)
+
 	case stepDoneMsg:
 		// The step is over: cancel its waiters so they cannot
-		// linger into the next prompt, then show the outcome.
+		// linger into the next prompt, drop whatever the observer
+		// wrote in the race window around the step's end so it
+		// cannot be attributed to the next reply, then show the
+		// outcome. The state settles before the outcome is
+		// appended so the rerender drops the forming line - the
+		// final answer replaces it in the same spot.
 		m.step.cancel()
 		m.step = nil
+		if m.stream != nil {
+			m.stream.Discard()
+		}
+		m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))
 		} else {
 			m.history = msg.res.History
 			m.appendLine(answerStyle.Render(msg.res.Answer))
 		}
-		m.prompt, m.tool, m.state = "", ToolEvent{}, chatReady
 		return m, nil
 
 	case modelsDoneMsg:
@@ -250,6 +296,9 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			m.gate.Close()
 			m.feed.Close()
+			if m.stream != nil {
+				m.stream.Close()
+			}
 			m.step.cancel()
 			return m, tea.Quit
 		}
@@ -303,6 +352,26 @@ func shorten(s string, n int) string {
 	return s[:n] + "…"
 }
 
+// maxLive caps the streamed text the forming transcript line keeps.
+// The final answer lands in the transcript from the step result
+// regardless, so the live buffer only serves the in-progress view -
+// long replies show their tail.
+const maxLive = 8 * 1024
+
+// appendLive grows the live text, capped to its tail on a rune
+// boundary: one step cannot grow the view buffer without bound.
+func appendLive(live, delta string) string {
+	live += delta
+	if len(live) <= maxLive {
+		return live
+	}
+	cut := len(live) - maxLive
+	for cut < len(live) && !utf8.RuneStart(live[cut]) {
+		cut++
+	}
+	return live[cut:]
+}
+
 // submit starts one agent step for the entered prompt. A line
 // starting with / is a REPL command instead and never reaches the
 // model.
@@ -332,14 +401,31 @@ func (m *chatModel) submit() tea.Cmd {
 		res, err := m.agent.Step(m.ctx, m.history, prompt)
 		return stepDoneMsg{res: res, err: err}
 	}
-	return tea.Batch(step, m.gate.WaitOn(m.step.done), m.feed.WaitOn(m.step.done), m.spinner.Tick)
+	cmds := []tea.Cmd{step, m.gate.WaitOn(m.step.done), m.feed.WaitOn(m.step.done), m.spinner.Tick}
+	if m.stream != nil {
+		cmds = append(cmds, m.stream.WaitOn(m.step.done))
+	}
+	return tea.Batch(cmds...)
 }
 
 // appendLine adds a rendered line to the transcript and scrolls to
 // the bottom.
 func (m *chatModel) appendLine(line string) {
 	m.lines = append(m.lines, line)
-	m.viewport.SetContent(strings.Join(m.lines, "\n"))
+	m.refreshTranscript()
+}
+
+// refreshTranscript renders the transcript into the viewport: the
+// finished lines, plus - while a step is streaming - the forming
+// reply as one more line at the bottom, approval dialog included.
+// The step result replaces it wholesale, so the completed answer
+// never doubles up; live is empty whenever no step is running.
+func (m *chatModel) refreshTranscript() {
+	content := strings.Join(m.lines, "\n")
+	if m.live != "" {
+		content += "\n" + answerStyle.Render(m.live)
+	}
+	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
 }
 
@@ -499,8 +585,13 @@ func (m *chatModel) command(line string) tea.Cmd {
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
 		return m.listModels("", m.modelSeq, true)
 
+	case "/debug":
+		// Compiled in only with -tags debugui; the off build's
+		// handler says so instead of offering a toggle.
+		return m.debugCommand()
+
 	default:
-		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))
+		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>" + debugCommands))
 		return nil
 	}
 }
@@ -534,14 +625,19 @@ func (m *chatModel) View() tea.View {
 				sb.WriteString(" ")
 				sb.WriteString(dimStyle.Render(shorten(m.tool.Args, 60)))
 			}
-		} else {
+		} else if m.live == "" {
 			sb.WriteString(dimStyle.Render("thinking…"))
+		} else {
+			sb.WriteString(dimStyle.Render("answering…"))
 		}
 	case chatApproving:
 		sb.WriteString(fmt.Sprintf("allow? %s",
 			dimStyle.Render("[y] allow · [n] deny")))
 	default:
 		sb.WriteString(dimStyle.Render("enter to send · ctrl+j new line · pgup/pgdown scroll · ctrl+c quit"))
+	}
+	if m.debug {
+		sb.WriteString(m.debugOverlay())
 	}
 	sb.WriteString("\n\n")
 	sb.WriteString(m.textarea.View())

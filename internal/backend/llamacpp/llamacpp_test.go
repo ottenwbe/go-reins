@@ -23,7 +23,12 @@ func TestChatPostsToV1Completions(t *testing.T) {
 		if req["model"] != "qwen2.5" {
 			t.Errorf("model = %v, want qwen2.5", req["model"])
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`))
+		// Chat delegates to ChatStream, so the request always asks
+		// for the SSE protocol; a nil observer just collects.
+		if req["stream"] != true {
+			t.Errorf("stream = %v, want true", req["stream"])
+		}
+		_, _ = w.Write([]byte("data: " + `{"choices":[{"delta":{"content":"hi"}}]}` + "\n\n" + "data: [DONE]\n"))
 	}))
 	defer srv.Close()
 
@@ -40,6 +45,63 @@ func TestChatPostsToV1Completions(t *testing.T) {
 	}
 	if resp.Content != "hi" {
 		t.Errorf("content = %q, want %q", resp.Content, "hi")
+	}
+}
+
+// TestChatStreamsTokens verifies ChatStream against llama-server's
+// SSE protocol: delta.content chunks reach the observer in order,
+// comments and the DONE marker are ignored, and the full text
+// comes back.
+func TestChatStreamsTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fl := w.(http.Flusher)
+		for _, line := range []string{
+			": keep-alive", // SSE comment: ignored
+			`data: {"choices":[{"delta":{"content":"hel"}}]}`,
+			`data: {"choices":[{"delta":{"content":"lo"}}]}`,
+			`data: {"choices":[{"delta":{}}]}`, // empty delta: ignored
+			`data: [DONE]`,                     // the terminator
+		} {
+			_, _ = w.Write([]byte(line + "\n"))
+			fl.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var deltas []string
+	resp, err := l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(d string) {
+		deltas = append(deltas, d)
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Content != "hello" {
+		t.Errorf("content = %q, want %q", resp.Content, "hello")
+	}
+	if strings.Join(deltas, "") != "hello" {
+		t.Errorf("deltas = %v, want hel lo in order", deltas)
+	}
+}
+
+// TestChatStreamCarriesErrorChunk pins that an error object in an
+// SSE chunk fails the call with the server's own message.
+func TestChatStreamCarriesErrorChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`data: {"error":{"message":"bad gateway"}}` + "\n"))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "bad gateway") {
+		t.Errorf("ChatStream error = %v, want the server's message", err)
 	}
 }
 
@@ -92,5 +154,23 @@ func TestChatCarriesServerError(t *testing.T) {
 	_, err = l.Chat(context.Background(), backend.ChatRequest{Model: "m"})
 	if err == nil || !strings.Contains(err.Error(), "bad gateway") {
 		t.Errorf("Chat error = %v, want the server message included", err)
+	}
+}
+
+// TestChatStreamRequiresDone pins that a stream ending without the
+// SSE terminator is a truncated reply, not a short answer.
+func TestChatStreamRequiresDone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("data: " + `{"choices":[{"delta":{"content":"hal"}}]}` + "\n"))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "before the terminator") {
+		t.Errorf("Chat error = %v, want the truncated-stream error", err)
 	}
 }

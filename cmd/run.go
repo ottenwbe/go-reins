@@ -48,12 +48,17 @@ func runTask(cmd *cobra.Command, args []string) error {
 // call, and the answer as the final frame.
 func runInteractive(task string) error {
 	gate := tui.NewApprovalGate()
-	a, err := session.NewAgent(conf, session.GateApprover(gate, conf))
+	stream := tui.NewStreamFeed()
+	opts := []agent.Option{}
+	if !conf.NoStream {
+		opts = append(opts, agent.WithStreamObserver(stream.Observer()))
+	}
+	a, err := session.NewAgent(conf, session.GateApprover(gate, conf), opts...)
 	if err != nil {
 		return err
 	}
 
-	res, err := tui.RunTask(a, gate, task)
+	res, err := tui.RunTask(a, gate, stream, task)
 	if err != nil {
 		return err
 	}

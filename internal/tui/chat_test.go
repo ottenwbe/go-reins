@@ -35,7 +35,7 @@ func (f *failModels) Models(context.Context) ([]string, error) {
 // startChat builds a chat model in the state the command tests
 // exercise: input focused and a window size applied.
 func startChat(a *agent.Agent, gate *ApprovalGate, switchBackend func(string) error) *chatModel {
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", switchBackend)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", switchBackend)
 	m.Init()
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return next.(*chatModel)
@@ -56,7 +56,7 @@ func TestChatModelStepFlow(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "the answer"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", nil)
 	m.Init() // focuses the input area
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -116,7 +116,7 @@ func TestChatShowsCurrentTool(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, "go-reins chat", nil)
+	m := newChatModel(a, gate, feed, nil, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -152,7 +152,7 @@ func TestChatModelMultilineInput(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -191,7 +191,7 @@ func TestChatDropsStaleToolEvents(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, "go-reins chat", nil)
+	m := newChatModel(a, gate, feed, nil, "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -797,4 +797,128 @@ func TestStepScopeCancelIsIdempotent(t *testing.T) {
 	// The nil scope tolerates cancel: chatReady models have none.
 	var none *stepScope
 	none.cancel()
+}
+
+// TestChatStreamsIntoTranscript verifies that streamed deltas render
+// as a forming line inside the transcript, that the line keeps growing
+// with each delta, and that the step result replaces it in place
+// without doubling up the answer.
+func TestChatStreamsIntoTranscript(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	stream := NewStreamFeed()
+	defer stream.Close()
+	a := agent.New(&stubBackend{reply: "the full answer"}, "m", "sys", nil)
+	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m.Init()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+	if m.state != chatBusy {
+		t.Fatalf("state after submit = %v, want chatBusy", m.state)
+	}
+
+	// The first delta puts the forming line into the transcript.
+	next, _ = m.Update(StreamEvent{Delta: "the "})
+	m = next.(*chatModel)
+	view := m.View().Content
+	if !strings.Contains(view, "the ") {
+		t.Errorf("first delta missing from transcript: %q", view)
+	}
+
+	// A second delta grows the line in place.
+	next, _ = m.Update(StreamEvent{Delta: "full"})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "the full") {
+		t.Errorf("second delta missing from transcript: %q", m.View().Content)
+	}
+
+	// The step ends: the final answer replaces the forming line,
+	// appearing exactly once.
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "the full answer"}})
+	m = next.(*chatModel)
+	if m.state != chatReady {
+		t.Errorf("state after step = %v, want chatReady", m.state)
+	}
+	if got := strings.Count(m.View().Content, "the full answer"); got != 1 {
+		t.Errorf("final answer appears %d times, want 1", got)
+	}
+
+	// A delta from a step that already ended is dropped instead of
+	// reviving the transcript.
+	next, _ = m.Update(StreamEvent{Delta: "noise"})
+	m = next.(*chatModel)
+	if strings.Contains(m.View().Content, "noise") {
+		t.Error("stale delta reached the transcript")
+	}
+}
+
+// TestChatStreamsAcrossApproval verifies that deltas arriving while
+// the operator decides a tool call keep the forming line growing
+// and the wait chain armed: prose the model streamed before the
+// call must neither freeze the rest of the reply nor leak into the
+// next prompt's stream.
+func TestChatStreamsAcrossApproval(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	stream := NewStreamFeed()
+	defer stream.Close()
+	reply := make(chan bool, 1)
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil,
+		agent.WithApprover(func(tool, args string) bool {
+			return <-reply
+		}))
+	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m.Init()
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'h', Text: "hello"})
+	m = next.(*chatModel)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*chatModel)
+
+	// A tool call needs approval; the state leaves chatBusy.
+	next, _ = m.Update(ApprovalRequest{Tool: "read", Args: "{}", Reply: reply})
+	m = next.(*chatModel)
+	if m.state != chatApproving {
+		t.Fatalf("state after approval request = %v, want chatApproving", m.state)
+	}
+
+	// Prose streamed before the call arrives while approving: it
+	// must reach the transcript, and the waiter must stay armed.
+	next, _ = m.Update(StreamEvent{Delta: "before "})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "before ") {
+		t.Errorf("delta during approval missing from transcript: %q", m.View().Content)
+	}
+	next, cmd := m.Update(StreamEvent{Delta: "the call"})
+	m = next.(*chatModel)
+	if cmd == nil {
+		t.Fatal("stream waiter not re-armed during approval")
+	}
+	if !strings.Contains(m.View().Content, "before the call") {
+		t.Errorf("deltas during approval not accumulated: %q", m.View().Content)
+	}
+
+	// The operator allows: the step keeps going and more deltas
+	// still land.
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'y'})
+	m = next.(*chatModel)
+	next, _ = m.Update(StreamEvent{Delta: " after"})
+	m = next.(*chatModel)
+	if !strings.Contains(m.View().Content, "before the call after") {
+		t.Errorf("delta after approval missing: %q", m.View().Content)
+	}
+
+	// The step ends: the final answer replaces the forming line.
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "ok"}})
+	m = next.(*chatModel)
+	if got := strings.Count(m.View().Content, "ok"); got != 1 {
+		t.Errorf("final answer appears %d times, want 1", got)
+	}
 }
