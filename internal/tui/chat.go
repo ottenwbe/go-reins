@@ -195,12 +195,17 @@ func (m *chatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case stepDoneMsg:
 		// The step is over: cancel its waiters so they cannot
-		// linger into the next prompt, then show the outcome. The
-		// state settles before the outcome is appended so the
-		// rerender drops the forming line - the final answer
-		// replaces it in the same spot.
+		// linger into the next prompt, drop whatever the observer
+		// wrote in the race window around the step's end so it
+		// cannot be attributed to the next reply, then show the
+		// outcome. The state settles before the outcome is
+		// appended so the rerender drops the forming line - the
+		// final answer replaces it in the same spot.
 		m.step.cancel()
 		m.step = nil
+		if m.stream != nil {
+			m.stream.Discard()
+		}
 		m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 		if msg.err != nil {
 			m.appendLine(errorStyle.Render("error: " + msg.err.Error()))

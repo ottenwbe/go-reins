@@ -61,12 +61,20 @@ func (f *StreamFeed) Observer() agent.StreamObserver {
 // already drained by the previous wait makes the loop go around
 // again instead of ending the chain - a dead chain would leave a
 // stale notification and undelivered text behind for the next step
-// to misattribute.
+// to misattribute. A wakeup that raced the step's end is dropped
+// too: select may pick the notification even though done is
+// closed, and delivering would attribute an ended step's text to
+// whatever step is running by the time the message lands.
 func (f *StreamFeed) WaitOn(done <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			select {
 			case <-f.notify:
+				select {
+				case <-done:
+					return nil // the step this wait served is over
+				default:
+				}
 			case <-f.done:
 				return nil
 			case <-done:
@@ -80,6 +88,21 @@ func (f *StreamFeed) WaitOn(done <-chan struct{}) tea.Cmd {
 				return StreamEvent{Delta: chunk}
 			}
 		}
+	}
+}
+
+// Discard drops any text left in the feed and consumes a pending
+// wakeup. A step's leftovers must not reach the next step's waiter:
+// text the observer wrote in the race window around the step's end
+// would otherwise be drained and shown as part of the next reply.
+// Call it when a step ends, before the next waiter is armed.
+func (f *StreamFeed) Discard() {
+	f.mu.Lock()
+	f.pending.Reset()
+	f.mu.Unlock()
+	select {
+	case <-f.notify:
+	default: // no wakeup pending
 	}
 }
 

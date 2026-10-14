@@ -48,11 +48,16 @@ func (l *LlamaCpp) Chat(ctx context.Context, req backend.ChatRequest) (backend.C
 
 // ChatStream implements backend.Streamer via /v1/chat/completions
 // with stream: true. llama-server answers in SSE: "data: {json}"
-// lines carrying choices[0].delta.content, closed by
-// "data: [DONE]". Comment and keep-alive lines are ignored.
+// lines carrying choices[0].delta.content, closed by the
+// "data: [DONE]" line. Comment and keep-alive lines are
+// ignored. The terminator is the protocol's completion marker: a
+// stream that ends without it was truncated (connection dropped
+// mid-reply, or an empty 200), so the accumulated text is rejected
+// instead of passing as a possibly short answer.
 func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDelta func(string)) (backend.ChatResponse, error) {
 	var full strings.Builder
 	chunks := 0
+	sawDone := false
 	err := backend.PostJSONLines(ctx, l.client, l.baseURL, "/v1/chat/completions", map[string]any{
 		"model":    req.Model,
 		"messages": req.Messages,
@@ -63,8 +68,12 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 			return nil // SSE comment or keep-alive
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(s, "data:"))
-		if data == "" || data == "[DONE]" {
-			return nil // keep-alive or the stream terminator
+		if data == "" {
+			return nil // keep-alive
+		}
+		if data == "[DONE]" {
+			sawDone = true
+			return nil // the stream terminator
 		}
 		var chunk struct {
 			Choices []struct {
@@ -96,6 +105,9 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 	})
 	if err != nil {
 		return backend.ChatResponse{}, fmt.Errorf("llamacpp: %w", err)
+	}
+	if !sawDone {
+		return backend.ChatResponse{}, errors.New("llamacpp: stream ended before the terminator")
 	}
 	if chunks == 0 {
 		return backend.ChatResponse{}, errors.New("llamacpp: empty response")

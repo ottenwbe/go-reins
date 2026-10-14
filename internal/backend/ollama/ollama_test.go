@@ -116,7 +116,7 @@ func TestNewNormalizesTrailingSlash(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"}}`))
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"}}` + "\n" + `{"done":true}` + "\n"))
 	}))
 	defer srv.Close()
 
@@ -192,5 +192,23 @@ func TestChatCarriesServerError(t *testing.T) {
 	_, err = o.Chat(context.Background(), backend.ChatRequest{Model: "nope"})
 	if err == nil || !strings.Contains(err.Error(), "model 'nope' not found") {
 		t.Errorf("Chat error = %v, want server's message included", err)
+	}
+}
+
+// TestChatStreamRequiresDone pins that a stream ending without the
+// final done object is a truncated reply, not a short answer.
+func TestChatStreamRequiresDone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"hal"}}` + "\n"))
+	}))
+	defer srv.Close()
+
+	o, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = o.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "before the final chunk") {
+		t.Errorf("Chat error = %v, want the truncated-stream error", err)
 	}
 }

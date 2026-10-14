@@ -60,6 +60,7 @@ func TestChatStreamsTokens(t *testing.T) {
 			`data: {"choices":[{"delta":{"content":"hel"}}]}`,
 			`data: {"choices":[{"delta":{"content":"lo"}}]}`,
 			`data: {"choices":[{"delta":{}}]}`, // empty delta: ignored
+			`data: [DONE]`,                     // the terminator
 		} {
 			_, _ = w.Write([]byte(line + "\n"))
 			fl.Flush()
@@ -153,5 +154,23 @@ func TestChatCarriesServerError(t *testing.T) {
 	_, err = l.Chat(context.Background(), backend.ChatRequest{Model: "m"})
 	if err == nil || !strings.Contains(err.Error(), "bad gateway") {
 		t.Errorf("Chat error = %v, want the server message included", err)
+	}
+}
+
+// TestChatStreamRequiresDone pins that a stream ending without the
+// SSE terminator is a truncated reply, not a short answer.
+func TestChatStreamRequiresDone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("data: " + `{"choices":[{"delta":{"content":"hal"}}]}` + "\n"))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "before the terminator") {
+		t.Errorf("Chat error = %v, want the truncated-stream error", err)
 	}
 }

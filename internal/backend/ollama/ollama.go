@@ -48,9 +48,14 @@ func (o *Ollama) Chat(ctx context.Context, req backend.ChatRequest) (backend.Cha
 // ChatStream implements backend.Streamer via /api/chat with
 // stream: true. Ollama answers in newline-delimited JSON: one
 // {"message":{"content":...}} object per token, a bare {"error":...}
-// object on failure, and a final {"done":true} object.
+// object on failure, and a final {"done":true} object. The final
+// object is the protocol's completion marker: a stream that ends
+// without it was truncated (connection dropped mid-reply, or an
+// empty 200), so the accumulated text is rejected instead of
+// passing as a possibly short answer.
 func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelta func(string)) (backend.ChatResponse, error) {
 	var full strings.Builder
+	sawDone := false
 	err := backend.PostJSONLines(ctx, o.client, o.baseURL, "/api/chat", map[string]any{
 		"model":    req.Model,
 		"messages": req.Messages,
@@ -69,6 +74,9 @@ func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelt
 		if chunk.Error != "" {
 			return errors.New(chunk.Error)
 		}
+		if chunk.Done {
+			sawDone = true
+		}
 		if c := chunk.Message.Content; c != "" {
 			full.WriteString(c)
 			if onDelta != nil {
@@ -79,6 +87,9 @@ func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelt
 	})
 	if err != nil {
 		return backend.ChatResponse{}, fmt.Errorf("ollama: %w", err)
+	}
+	if !sawDone {
+		return backend.ChatResponse{}, errors.New("ollama: stream ended before the final chunk")
 	}
 	return backend.ChatResponse{Content: full.String()}, nil
 }
