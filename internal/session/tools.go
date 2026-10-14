@@ -8,18 +8,20 @@ import (
 	"go-reins/internal/agent"
 	"go-reins/internal/config"
 	"go-reins/internal/tools/read"
+	"go-reins/internal/tools/search"
 	"go-reins/internal/tools/shell"
 )
 
 // toolOrder lists every tool the harness can load, in the order a
 // session registers them when the operator does not restrict the set.
-var toolOrder = []string{"read", "shell"}
+var toolOrder = []string{"read", "search", "shell"}
 
 // toolRegistry maps tool names to their constructors. Adding a tool
 // to the harness means one entry here.
 var toolRegistry = map[string]func() agent.Tool{
-	"read":  func() agent.Tool { return read.New() },
-	"shell": func() agent.Tool { return shell.New() },
+	"read":   func() agent.Tool { return read.New() },
+	"search": func() agent.Tool { return search.New() },
+	"shell":  func() agent.Tool { return shell.New() },
 }
 
 // Tools assembles the agent's tool set from configuration:
