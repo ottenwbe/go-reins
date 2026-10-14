@@ -20,6 +20,13 @@ import (
 const (
 	// defaultTimeout bounds a single command.
 	defaultTimeout = 30 * time.Second
+	// pipeGrace bounds how long the run keeps draining output
+	// after the command - or its timeout - has ended: a background
+	// child inheriting the pipes can outlive its parent, and
+	// without a bound the run would wait for it indefinitely. The
+	// process-group kill makes the grace unnecessary on unix; it
+	// is the portable floor underneath.
+	pipeGrace = 2 * time.Second
 	// maxOutput caps the observation so one noisy command cannot
 	// blow up the conversation history.
 	maxOutput = 4000
@@ -74,8 +81,40 @@ func (s *Shell) Execute(ctx context.Context, args string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", call.Command)
 	cmd.Stdout = out
 	cmd.Stderr = out
+	// The command runs in its own process group and a timeout
+	// kills the group: a command that backgrounds a child which
+	// inherits the pipes would otherwise leave that child running -
+	// sh dies on time, the child holds the output open, and the
+	// run waits for it long past the timeout. WaitDelay is the
+	// portable floor: past the grace the pipes close and the run
+	// returns no matter what still holds them.
+	cmd.SysProcAttr = procGroupAttr()
+	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
+	cmd.WaitDelay = pipeGrace
 	err := cmd.Run()
+	// The run is over, but its process group may not be: a command
+	// that exited early can leave a background child running. reap
+	// the group so a gated tool call never leaks processes; a group
+	// that fully exited is already gone (killGroup tolerates ESRCH),
+	// and a command that means to detach can setsid its way out.
+	killGroup(cmd.Process.Pid)
 	observation := out.String()
+
+	// The command exited on its own, but a background child held
+	// the pipes past the grace: WaitDelay closed them and reported
+	// it. The context may have expired while waiting for the pipes,
+	// but the command itself finished - its exit status and output
+	// stand, timeout or not. This check comes before the context
+	// switch for exactly that reason.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		if st := cmd.ProcessState; st == nil || st.ExitCode() == 0 {
+			if len(observation) == 0 {
+				return "(no output)", nil
+			}
+			return observation, nil
+		}
+		return fmt.Sprintf("%s\n(exit status %d)", observation, cmd.ProcessState.ExitCode()), nil
+	}
 
 	// Cancellation first: exec reports a killed process as an
 	// ordinary non-zero exit, and a cancelled command must not be
