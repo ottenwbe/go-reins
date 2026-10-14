@@ -12,13 +12,14 @@ import (
 func TestSanitize(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"plain text", "plain text"},
-		{"multi\nline\ttabs\r\n", "multi\nline\ttabs\r\n"},
+		{"multi\nline\ttabs\r\n", "multi\nline\ttabs\n"},   // CRLF is a line break,
 		{"unicode: héllo → 世界 🎉", "unicode: héllo → 世界 🎉"}, // emoji are not control characters
 		{"\x1b[31mred\x1b[0m text", "red text"},            // CSI color
 		{"\x1b[2J\x1b[Hcleared", "cleared"},                // screen rewrite, cursor home
 		{"\x1b]0;fake title\x07after", "after"},            // OSC title
 		{"\x1bMreverse index", "reverse index"},            // two-character ESC sequence
 		{"before\x00null\x08\x7f", "beforenull"},           // C0 and DEL
+		{"yes\rno", "yesno"},                               // lone CR overwrites the display line
 		{"c1: \u009b31m", "c1: 31m"},                       // 8-bit CSI
 		{"carriage\x0bvertical\x0cform", "carriageverticalform"},
 	}
