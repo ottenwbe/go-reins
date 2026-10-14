@@ -338,3 +338,29 @@ func TestReadUnterminatedLineAtCap(t *testing.T) {
 		t.Error("unterminated line over maxLineLen must carry the truncation marker")
 	}
 }
+
+// TestReadFollowsInTreeSymlink pins that the root-constrained open
+// stays as permissive as the old containment check: a symlink that
+// resolves inside the working directory is followed and read
+// normally. Only escapes are refused - the tree's own links are
+// the operator's business.
+func TestReadFollowsInTreeSymlink(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeFile(t, dir, "real.txt", "contents\n")
+
+	// A relative target: the link resolves inside the root and is
+	// followed. An absolute target is refused even when it names a
+	// file inside the tree - it is not relative to the root.
+	if err := os.Symlink("real.txt", filepath.Join(dir, "alias.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	out, err := call(t, `{"path":"alias.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute via in-tree symlink: %v", err)
+	}
+	if !strings.Contains(out, "contents") {
+		t.Errorf("output missing the file's contents:\n%s", out)
+	}
+}
