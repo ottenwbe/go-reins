@@ -126,6 +126,25 @@ version, and the platform.
 Shell completion for bash, zsh, fish, and powershell ships with the
 standard cobra `completion` command.
 
+## Tools
+
+The agent's tool set is small, explicit, and risk-tiered:
+
+| Tool | Risk | What it does |
+| --- | --- | --- |
+| `read` | read-only | returns a file under the working directory with 1-based line numbers, windowed by `offset`/`limit` |
+| `search` | read-only | finds files by glob (`**` spans directories) and, with a `query`, returns matching lines as `path:line:text` |
+| `shell` | mutating | runs a shell command under the working directory; every call asks the operator unless `--yes` or `tool-risk` says otherwise |
+
+Read-only tools run without approval; mutating ones are gated per
+call. All tools are confined to the working directory — `read`
+resolves symlinks and refuses anything that escapes it, and
+`search` considers regular files only, so a symlink planted in the
+tree cannot leak a file from outside it. `search` skips hidden
+files and directories the way ripgrep does, skips binary content,
+and caps its observation like the other tools — a broad glob over
+a big tree cannot blow up the conversation.
+
 ## Configuration
 
 | Flag | Env | Default | Description |
@@ -135,7 +154,7 @@ standard cobra `completion` command.
 | `--url` | `GO_REINS_URL` | per-backend default | backend base URL (validated at startup) |
 | `--yes` | `GO_REINS_YES` | `false` | auto-approve tool calls |
 | `--no-stream` | `GO_REINS_NO_STREAM` | `false` | disable streamed replies in the interactive views |
-| `--tools` | `GO_REINS_TOOLS` | all tools | comma-separated tools to load, e.g. `read,shell`; an empty list loads none |
+| `--tools` | `GO_REINS_TOOLS` | all tools | comma-separated tools to load, e.g. `read,search,shell`; an empty list loads none |
 | `--tool-risk` | `GO_REINS_TOOL_RISK` | tool's own tier | per-tool risk override, e.g. `shell=read-only` (`read-only`, `mutating`) |
 | `--log-level` | `GO_REINS_LOG_LEVEL` | `error` | log level: `debug`, `info`, `warn`, `error` (stderr) |
 | `--max-turns` | `GO_REINS_MAX_TURNS` | `8` | maximum backend round trips per run before the agent gives up (at least 1) |
@@ -212,7 +231,7 @@ hard-to-reproduce UI bugs visible.
 
 Tests cover the agent loop (fake backend), both adapters
 (`httptest` servers), the shared HTTP plumbing, config resolution
-and validation, tool selection and risk overrides, both tools'
+and validation, tool selection and risk overrides, the tools'
 windowing/capping/boundary behavior, the TUI models, the SBOM
 roundtrip, and build info extraction — so no running backend is
 needed. CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
@@ -232,6 +251,7 @@ request: the same gate locally and in CI.
 - [x] Streaming responses: backends stream on one wire path, the
       chat transcript shows the reply forming, truncated streams
       are rejected
-- [ ] `search` tool (glob + grep, read-only) and `edit` tool with
-      diff approval in the TUI
+- [x] `search` tool: glob + grep over the working directory,
+      read-only, with capped output
+- [ ] `edit` tool with diff approval in the TUI
 - [ ] More backends (OpenAI-compatible cloud APIs)

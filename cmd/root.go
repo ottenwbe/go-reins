@@ -52,7 +52,7 @@ func init() {
 	flags.Bool("yes", false, "auto-approve tool calls; without this flag every tool call is shown for confirmation")
 	flags.Bool("no-stream", false, "disable streamed replies in the interactive views (chat and run)")
 	flags.String("log-level", "error", "log level: debug, info, warn, error (logs go to stderr)")
-	flags.String("tools", "", "comma-separated tools to load, e.g. read,shell (default: all)")
+	flags.String("tools", "", "comma-separated tools to load, e.g. read,search,shell (default: all)")
 	flags.String("tool-risk", "", "per-tool risk override, e.g. shell=read-only (values: read-only, mutating)")
 	flags.Int("max-turns", agent.DefaultMaxTurns, "maximum backend round trips per run before the agent gives up")
 }

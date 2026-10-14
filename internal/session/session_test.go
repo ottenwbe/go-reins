@@ -123,14 +123,14 @@ func TestToolsDefaultLoadsAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tools: %v", err)
 	}
-	if len(tools) != 2 || tools[0].Name() != "read" || tools[1].Name() != "shell" {
+	if len(tools) != 3 || tools[0].Name() != "read" || tools[1].Name() != "search" || tools[2].Name() != "shell" {
 		var names []string
 		for _, tl := range tools {
 			names = append(names, tl.Name())
 		}
-		t.Errorf("tools = %v, want [read shell] in default order", names)
+		t.Errorf("tools = %v, want [read search shell] in default order", names)
 	}
-	if tools[0].Risk() != agent.RiskReadOnly || tools[1].Risk() != agent.RiskMutating {
+	if tools[0].Risk() != agent.RiskReadOnly || tools[1].Risk() != agent.RiskReadOnly || tools[2].Risk() != agent.RiskMutating {
 		t.Error("default risk tiers changed")
 	}
 }
