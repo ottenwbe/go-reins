@@ -305,3 +305,46 @@ func TestSearchMultiStarGlobs(t *testing.T) {
 		t.Errorf("within-segment ** misbehaved:\n%s", out)
 	}
 }
+
+// TestSearchReportsPartialLines pins the incompleteness note: a
+// line longer than the 1 MiB match window is only matched in its
+// first part, and the observation says so - a match past the
+// window must not silently vanish.
+func TestSearchReportsPartialLines(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	// A match inside the window is found, and the note still
+	// appears because the line was not fully searched.
+	writeFile(t, dir, "early.txt", "needle"+strings.Repeat("x", 2<<20)+"\n")
+	out, err := call(t, `{"glob":"early.txt","query":"needle"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "early.txt:1:") {
+		t.Errorf("in-window match missing:\n%s", out)
+	}
+	if !strings.Contains(out, "matched only in their first 1 MiB") {
+		t.Errorf("partial note missing:\n%s", out)
+	}
+
+	// A match past the window is not found, and the note explains
+	// why instead of reporting a plain no-matches.
+	writeFile(t, dir, "late.txt", strings.Repeat("x", 2<<20)+"needle\n")
+	out, err = call(t, `{"glob":"late.txt","query":"^needle$"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "late.txt") {
+		t.Errorf("out-of-window match should not be found:\n%s", out)
+	}
+	if !strings.Contains(out, "matched only in their first 1 MiB") {
+		t.Errorf("partial note missing for an unmatched long line:\n%s", out)
+	}
+	if out == "(no matches)" {
+		t.Errorf("long-line result must not claim a plain (no matches):\n%s", out)
+	}
+	if len(out) > maxOutput {
+		t.Errorf("observation exceeds the byte budget: %d", len(out))
+	}
+}

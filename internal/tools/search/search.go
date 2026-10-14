@@ -52,6 +52,12 @@ const (
 // within maxOutput.
 const truncNote = "(output truncated — narrow the glob or query)\n"
 
+// partialNote is appended when a line exceeded the match window:
+// the query then saw only its first matchLineLen bytes, and the
+// observation must say so instead of silently missing matches.
+// The budget reserves space for both notes.
+const partialNote = "(long lines are matched only in their first 1 MiB — matches deeper in them may be missing)\n"
+
 // Search finds files by glob and optionally greps their contents.
 type Search struct{}
 
@@ -111,80 +117,83 @@ func (s *Search) Execute(ctx context.Context, args string) (string, error) {
 		}
 	}
 
-	files, err := collect(ctx, pattern)
+	res := newResults(call.Limit)
+	if re == nil {
+		// List mode: matching paths, one per line.
+		err = collect(ctx, pattern, func(rel string, _ fs.FileInfo) (bool, error) {
+			return res.add(rel + "\n"), nil
+		})
+	} else {
+		err = collect(ctx, pattern, func(rel string, info fs.FileInfo) (bool, error) {
+			return grepInto(ctx, rel, info, re, res)
+		})
+	}
 	if err != nil {
 		return "", err
 	}
+	return res.render(), nil
+}
 
-	var results []string
-	truncated := false
-	if re == nil {
-		// List mode: matching paths, one per line.
-		for _, path := range files {
-			if len(results) == call.Limit {
-				truncated = true
-				break
-			}
-			line := path + "\n"
-			results, truncated = fit(results, line)
-			if truncated {
-				break
-			}
-		}
-	} else {
-		for _, path := range files {
-			if len(results) == call.Limit {
-				truncated = true
-				break
-			}
-			more, fileTrunc, err := grepFile(ctx, path, re, call.Limit-len(results))
-			if err != nil {
-				return "", err
-			}
-			for _, line := range more {
-				results, truncated = fit(results, line)
-				if truncated {
-					break
-				}
-			}
-			if truncated || fileTrunc {
-				truncated = true
-				break
-			}
-		}
+// results accumulates observation lines under the caller's line
+// limit and the byte budget. add reports whether the search should
+// stop: either cap running out marks the observation truncated.
+type results struct {
+	lines     []string
+	limit     int
+	truncated bool
+	partial   bool
+	budget    int
+}
+
+func newResults(limit int) *results {
+	return &results{
+		limit:  limit,
+		budget: maxOutput - len(truncNote) - len(partialNote),
 	}
+}
 
-	if len(results) == 0 {
-		return "(no matches)", nil
+// add appends one line unless a cap is exhausted; it reports
+// whether the caller should stop searching.
+func (r *results) add(line string) bool {
+	if len(r.lines) >= r.limit {
+		r.truncated = true
+		return true
+	}
+	spent := 0
+	for _, l := range r.lines {
+		spent += len(l)
+	}
+	if spent+len(line) > r.budget {
+		r.truncated = true
+		return true
+	}
+	r.lines = append(r.lines, line)
+	return false
+}
+
+// render assembles the observation: the lines, then the partial
+// note when a long line was not fully matched, then the
+// truncation note when a cap was hit.
+func (r *results) render() string {
+	if len(r.lines) == 0 && !r.partial && !r.truncated {
+		return "(no matches)"
 	}
 	var sb strings.Builder
-	for _, line := range results {
+	for _, line := range r.lines {
 		sb.WriteString(line)
 	}
-	if truncated {
+	if r.partial {
+		sb.WriteString(partialNote)
+	}
+	if r.truncated {
 		sb.WriteString(truncNote)
 	}
-	return sb.String(), nil
+	return sb.String()
 }
 
-// fit appends line to results under the byte budget. It reports
-// whether the budget - not the caller's line limit - ran out; the
-// caller decides that either way the observation is truncated.
-func fit(results []string, line string) ([]string, bool) {
-	if budgetSpent(results)+len(line) > maxOutput-len(truncNote) {
-		return results, true
-	}
-	return append(results, line), false
-}
-
-// budgetSpent counts what the rendered observation holds so far.
-func budgetSpent(results []string) int {
-	total := 0
-	for _, line := range results {
-		total += len(line)
-	}
-	return total
-}
+// errStopWalk ends the walk early: the results hit a cap. It is
+// swallowed by collect and never reaches the caller.
+var errStopWalk = errors.New("stop walk")
 
 // cleanGlob validates and normalizes the glob: it must be relative
 // to the working directory and must not climb out of it. Absolute
@@ -244,15 +253,19 @@ func matchSegments(pattern, name []string) bool {
 	return dp[len(name)]
 }
 
-// collect walks the working directory and returns the file paths
-// matching the pattern, in the walk's lexical order - the output
-// is deterministic. Hidden directories and files (dot-prefixed)
-// are skipped the way ripgrep does: they are almost always noise
-// (.git alone can dwarf a source tree), and the model did not ask
-// for them. The walk honors ctx, so cancellation is prompt even
-// in a big tree.
-func collect(ctx context.Context, pattern []string) ([]string, error) {
-	var files []string
+// collect walks the working directory and hands every matching
+// regular file to visit - the path as the walk sees it, plus the
+// walk-time stat so the reader can verify it is still the same
+// file - in the walk's lexical order, so the output is
+// deterministic. visit reports whether the search should stop
+// early (a cap was hit) or fails; results are consumed as the walk
+// finds them, so a broad glob over a big tree never allocates more
+// than the observation it will return. Hidden directories and
+// files (dot-prefixed) are skipped the way ripgrep does: they are
+// almost always noise (.git alone can dwarf a source tree), and
+// the model did not ask for them. The walk honors ctx, so
+// cancellation is prompt even in a big tree.
+func collect(ctx context.Context, pattern []string, visit func(rel string, info fs.FileInfo) (bool, error)) error {
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -279,61 +292,92 @@ func collect(ctx context.Context, pattern []string) ([]string, error) {
 			return nil
 		}
 		rel := filepath.ToSlash(path)
-		if matchSegments(pattern, strings.Split(rel, "/")) {
-			files = append(files, rel)
+		if !matchSegments(pattern, strings.Split(rel, "/")) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		stop, verr := visit(rel, info)
+		if verr != nil {
+			return verr
+		}
+		if stop {
+			return errStopWalk
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("walk: %w", err)
+	if errors.Is(err, errStopWalk) {
+		return nil
 	}
-	return files, nil
+	if err != nil {
+		return fmt.Errorf("walk: %w", err)
+	}
+	return nil
 }
 
-// grepFile returns the lines of path that match re, rendered as
-// path:line:text with 1-based line numbers and content capped at
-// maxLineLen for display. The query is matched against a wider
-// window (matchLineLen), so a match past the display cap is still
-// found - see the constant. atMost bounds how many matches one
-// file may contribute, so a file of a thousand matches cannot
-// crowd out every other file. fileTrunc reports that the per-file
-// bound was hit, which truncates the whole observation. Files that
-// look binary (a NUL byte in a scanned line) are skipped without
-// an error - grepping a binary is noise, not a failure.
-// Cancellation is honored between lines.
-func grepFile(ctx context.Context, path string, re *regexp.Regexp, atMost int) (lines []string, fileTrunc bool, err error) {
+// grepInto scans one file for lines matching re, adding matches to
+// res as path:line:text with 1-based line numbers and content
+// capped at maxLineLen for display. It reports whether the search
+// should stop (a cap was hit); open and read failures are errors
+// that fail the search, the way a failed walk does.
+//
+// The walk vetted a regular file, and the open must still be
+// reading that same file: a concurrent swap - the path replaced by
+// a symlink to somewhere outside the tree between the walk and
+// the open - names a different inode, and os.SameFile against the
+// walk-time stat catches it. A changed path is skipped, not read:
+// the search reads only what the walk saw.
+//
+// Files that look binary (a NUL byte in a scanned line) are
+// skipped without an error - grepping a binary is noise, not a
+// failure. A line longer than the match window marks the results
+// partial: the query saw only its first matchLineLen bytes, and
+// the observation says so. Cancellation is honored between lines.
+func grepInto(ctx context.Context, path string, info fs.FileInfo, re *regexp.Regexp, res *results) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("open %s: %w", path, err)
+		return false, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !os.SameFile(fi, info) {
+		return false, nil // the entry changed under the search: skip it
+	}
 
 	r := bufio.NewReaderSize(f, 64*1024)
 	for lineno := 1; ; lineno++ {
 		if err := ctx.Err(); err != nil {
-			return nil, false, fmt.Errorf("search: %w", err)
+			return false, fmt.Errorf("search: %w", err)
 		}
-		line, _, rerr := cappedLine(r, matchLineLen)
+		line, tooLong, rerr := cappedLine(r, matchLineLen)
 		if rerr == io.EOF && line == "" {
-			return lines, false, nil
+			return false, nil
 		}
 		if rerr != nil && rerr != io.EOF {
-			return nil, false, fmt.Errorf("read %s: %w", path, rerr)
+			return false, fmt.Errorf("read %s: %w", path, rerr)
 		}
 		if strings.ContainsRune(line, 0x00) {
-			return lines, false, nil // binary file: skip it silently
+			return false, nil // binary file: skip it silently
 		}
 		if re.MatchString(line) {
-			if len(lines) == atMost {
-				return lines, true, nil
-			}
 			if len(line) > maxLineLen {
 				line = line[:maxLineLen] + "…"
 			}
-			lines = append(lines, fmt.Sprintf("%s:%d:%s\n", path, lineno, line))
+			if res.add(fmt.Sprintf("%s:%d:%s\n", path, lineno, line)) {
+				return true, nil
+			}
+		}
+		if tooLong {
+			res.partial = true // the match window did not cover this line
 		}
 		if rerr == io.EOF {
-			return lines, false, nil
+			return false, nil
 		}
 	}
 }
