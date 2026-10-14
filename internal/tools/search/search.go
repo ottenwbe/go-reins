@@ -324,10 +324,12 @@ func collect(ctx context.Context, pattern []string, visit func(rel string, info 
 // that fail the search, the way a failed walk does.
 //
 // The walk vetted a regular file, and the open must still be
-// reading that same file: a concurrent swap - the path replaced by
-// a symlink to somewhere outside the tree between the walk and
-// the open - names a different inode, and os.SameFile against the
-// walk-time stat catches it. A changed path is skipped, not read:
+// reading that same file. Two swaps are caught before anything is
+// read: a path replaced by a FIFO would park a plain open until a
+// writer appears - the open is non-blocking, so it returns and
+// the stat below rejects what is not regular - and a path replaced
+// by a symlink names a different inode, which os.SameFile against
+// the walk-time stat catches. A changed path is skipped, not read:
 // the search reads only what the walk saw.
 //
 // Files that look binary (a NUL byte in a scanned line) are
@@ -336,7 +338,7 @@ func collect(ctx context.Context, pattern []string, visit func(rel string, info 
 // partial: the query saw only its first matchLineLen bytes, and
 // the observation says so. Cancellation is honored between lines.
 func grepInto(ctx context.Context, path string, info fs.FileInfo, re *regexp.Regexp, res *results) (bool, error) {
-	f, err := os.Open(path)
+	f, err := openNoBlock(path)
 	if err != nil {
 		return false, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -345,6 +347,9 @@ func grepInto(ctx context.Context, path string, info fs.FileInfo, re *regexp.Reg
 	fi, err := f.Stat()
 	if err != nil {
 		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return false, nil // swapped for something else: skip it
 	}
 	if !os.SameFile(fi, info) {
 		return false, nil // the entry changed under the search: skip it
