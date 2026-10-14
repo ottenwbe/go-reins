@@ -27,6 +27,19 @@ const (
 	chatApproving                  // waiting for the operator's tool-call decision
 )
 
+// String names the state for the debug overlay.
+func (s chatState) String() string {
+	switch s {
+	case chatReady:
+		return "ready"
+	case chatBusy:
+		return "busy"
+	case chatApproving:
+		return "approving"
+	}
+	return "unknown"
+}
+
 // chatModel is the interactive REPL: a scrolling transcript, an input
 // area, and an approval dialog. Conversation history is carried from
 // prompt to prompt via agent.Step, so the model keeps its context
@@ -52,8 +65,9 @@ type chatModel struct {
 	approval   *ApprovalRequest
 	tool       ToolEvent // tool of the running step, for the status line
 	step       *stepScope
-	modelSeq   int // generation of the newest model-deciding command (/model, /backend); older results are dropped
-	appliedSeq int // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	modelSeq   int  // generation of the newest model-deciding command (/model, /backend); older results are dropped
+	appliedSeq int  // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	debug      bool // /debug: show the state overlay in the status area; off unless asked for
 	width      int
 	height     int
 }
@@ -82,7 +96,7 @@ func newChatModel(a *agent.Agent, gate *ApprovalGate, feed *ToolFeed, stream *St
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ta := textarea.New()
-	ta.Placeholder = "type a task or /models, /model, /backend · ctrl+j for a new line · ctrl+c quits"
+	ta.Placeholder = "type a task or /models, /model, /backend, /debug · ctrl+j for a new line · ctrl+c quits"
 	ta.ShowLineNumbers = true
 	ta.Prompt = "› "
 	ta.MaxHeight = 5
@@ -571,8 +585,20 @@ func (m *chatModel) command(line string) tea.Cmd {
 		m.appendLine(dimStyle.Render("backend switched to " + m.agent.BackendName() + " - listing its models…"))
 		return m.listModels("", m.modelSeq, true)
 
+	case "/debug":
+		// A view into the state machine for hands-on testing: the
+		// overlay lives in the status area and costs nothing when
+		// off.
+		m.debug = !m.debug
+		if m.debug {
+			m.appendLine(dimStyle.Render("debug overlay on"))
+		} else {
+			m.appendLine(dimStyle.Render("debug overlay off"))
+		}
+		return nil
+
 	default:
-		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>"))
+		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>, /debug"))
 		return nil
 	}
 }
@@ -616,6 +642,19 @@ func (m *chatModel) View() tea.View {
 			dimStyle.Render("[y] allow · [n] deny")))
 	default:
 		sb.WriteString(dimStyle.Render("enter to send · ctrl+j new line · pgup/pgdown scroll · ctrl+c quit"))
+	}
+	if m.debug {
+		// The state overlay: what the REPL is waiting for, whether
+		// a step's waiters are armed, and how much live text the
+		// forming line holds. It reads the model on every frame,
+		// so the spinner keeps it fresh even between deltas.
+		step := "none"
+		if m.step != nil {
+			step = "armed"
+		}
+		sb.WriteString("\n")
+		sb.WriteString(dimStyle.Render(fmt.Sprintf(
+			"[debug] state=%s step=%s live=%d chars", m.state, step, len(m.live))))
 	}
 	sb.WriteString("\n\n")
 	sb.WriteString(m.textarea.View())
