@@ -126,6 +126,25 @@ version, and the platform.
 Shell completion for bash, zsh, fish, and powershell ships with the
 standard cobra `completion` command.
 
+## Tools
+
+The agent's tool set is small, explicit, and risk-tiered:
+
+| Tool | Risk | What it does |
+| --- | --- | --- |
+| `read` | read-only | returns a file under the working directory with 1-based line numbers, windowed by `offset`/`limit` |
+| `search` | read-only | finds files by glob (`**` spans directories) and, with a `query`, returns matching lines as `path:line:text` |
+| `shell` | mutating | runs a shell command under the working directory; every call asks the operator unless `--yes` or `tool-risk` says otherwise |
+
+Read-only tools run without approval; mutating ones are gated per
+call. All tools are confined to the working directory — `read`
+resolves symlinks and refuses anything that escapes it, and
+`search` considers regular files only, so a symlink planted in the
+tree cannot leak a file from outside it. `search` skips hidden
+files and directories the way ripgrep does, skips binary content,
+and caps its observation like the other tools — a broad glob over
+a big tree cannot blow up the conversation.
+
 ## Configuration
 
 | Flag | Env | Default | Description |
