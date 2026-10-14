@@ -5,6 +5,12 @@ for understanding how agent tooling is built: a small agent loop that
 talks to local inference backends (Ollama, llama.cpp) through a
 swappable interface, with tools the operator can configure and gate.
 
+This code base was built with the help of AI coding agents, with the
+explicit purpose of testing their limits. The commits, pull requests,
+and reviews in this repository are the record of that experiment:
+what was attempted, what held up under review, and what had to be
+fixed along the way.
+
 ## Agent vs. harness
 
 - **Agent** — the LLM in a loop that decides what to do next (reason,
