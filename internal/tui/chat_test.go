@@ -1138,10 +1138,12 @@ func TestChatShowsUsageUnderAnswer(t *testing.T) {
 	m := startChat(a, gate, nil)
 
 	next, _ := m.Update(stepDoneMsg{res: agent.RunResult{
-		Answer:  "the answer",
-		Turns:   1,
-		Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: 42},
-		Elapsed: 2 * time.Second,
+		Answer: "the answer",
+		Turns:  1,
+		Replies: []agent.ReplyStat{{
+			Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: 42},
+			Elapsed: 2 * time.Second,
+		}},
 	}})
 	m = next.(*chatModel)
 	transcript := strings.Join(m.lines, "\n")

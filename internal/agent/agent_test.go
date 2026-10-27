@@ -489,11 +489,11 @@ func TestRunCorrectsBadToolCallArguments(t *testing.T) {
 	}
 }
 
-// TestRunReportsUsageAndRate pins the token accounting a Run
-// carries: the backend-reported usage of the final turn, a measured
-// round-trip wall time, and the rate derived from the two. A tool
-// turn before the answer must not overwrite the final turn's stats.
-func TestRunReportsUsageAndRate(t *testing.T) {
+// TestRunReportsEveryReply pins the token accounting a Run carries:
+// one stat per backend round trip, in order - the tool turn and the
+// final answer both present, each with its backend-reported usage
+// and a measured wall time. The result's rate is the final reply's.
+func TestRunReportsEveryReply(t *testing.T) {
 	fb := &fakeBackend{replies: []backend.ChatResponse{
 		{
 			Content: `TOOLCALL weather {"city":"Berlin"}`,
@@ -511,33 +511,56 @@ func TestRunReportsUsageAndRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if res.Usage.PromptTokens != 120 || res.Usage.CompletionTokens != 42 {
-		t.Errorf("usage = %+v, want the final turn's {120 42}", res.Usage)
+	if len(res.Replies) != 2 {
+		t.Fatalf("replies = %d, want 2 (tool turn + final answer)", len(res.Replies))
 	}
-	if res.Elapsed <= 0 {
-		t.Errorf("elapsed = %v, want a measured round-trip time", res.Elapsed)
+	if got := res.Replies[0].Usage; got.PromptTokens != 100 || got.CompletionTokens != 7 {
+		t.Errorf("replies[0] usage = %+v, want the tool turn's {100 7}", got)
 	}
-	want := 42 / res.Elapsed.Seconds()
+	final := res.FinalReply()
+	if final.Usage.PromptTokens != 120 || final.Usage.CompletionTokens != 42 {
+		t.Errorf("final reply usage = %+v, want {120 42}", final.Usage)
+	}
+	for i, r := range res.Replies {
+		if r.Elapsed <= 0 {
+			t.Errorf("replies[%d] elapsed = %v, want a measured round-trip time", i, r.Elapsed)
+		}
+	}
+	want := 42 / final.Elapsed.Seconds()
 	if got := res.TokensPerSecond(); got != want {
-		t.Errorf("TokensPerSecond = %v, want %v (42 tokens over the round trip)", got, want)
+		t.Errorf("TokensPerSecond = %v, want %v (the final reply's rate)", got, want)
 	}
 }
 
 // TestTokensPerSecondGuards pins the zero cases: no backend-reported
-// count or no measured time means no rate, not a division by zero
-// or a nonsense number.
+// count, no measured time, or no replies at all means no rate - not
+// a division by zero or a nonsense number - and the rate reported is
+// the final reply's, not an earlier turn's.
 func TestTokensPerSecondGuards(t *testing.T) {
 	cases := []struct {
 		name string
 		res  RunResult
 		want float64
 	}{
-		{name: "no usage", res: RunResult{Elapsed: time.Second}, want: 0},
-		{name: "no elapsed", res: RunResult{Usage: backend.Usage{CompletionTokens: 10}}, want: 0},
+		{name: "no replies", res: RunResult{}, want: 0},
+		{name: "no usage", res: RunResult{
+			Replies: []ReplyStat{{Elapsed: time.Second}},
+		}, want: 0},
+		{name: "no elapsed", res: RunResult{
+			Replies: []ReplyStat{{Usage: backend.Usage{CompletionTokens: 10}}},
+		}, want: 0},
 		{name: "both present", res: RunResult{
-			Usage:   backend.Usage{CompletionTokens: 10},
-			Elapsed: 2 * time.Second,
+			Replies: []ReplyStat{{
+				Usage:   backend.Usage{CompletionTokens: 10},
+				Elapsed: 2 * time.Second,
+			}},
 		}, want: 5},
+		{name: "final reply wins", res: RunResult{
+			Replies: []ReplyStat{
+				{Usage: backend.Usage{CompletionTokens: 10}, Elapsed: time.Second},
+				{Usage: backend.Usage{CompletionTokens: 20}, Elapsed: 2 * time.Second},
+			},
+		}, want: 10},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

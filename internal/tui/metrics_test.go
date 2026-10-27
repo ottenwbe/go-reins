@@ -14,10 +14,12 @@ import (
 // completion tokens over the given round-trip wall time.
 func measured(tokens int, elapsed time.Duration) agent.RunResult {
 	return agent.RunResult{
-		Answer:  "an answer",
-		Turns:   1,
-		Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: tokens},
-		Elapsed: elapsed,
+		Answer: "an answer",
+		Turns:  1,
+		Replies: []agent.ReplyStat{{
+			Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: tokens},
+			Elapsed: elapsed,
+		}},
 	}
 }
 
@@ -53,8 +55,8 @@ func TestReplyMetricsSkipsUnmeasured(t *testing.T) {
 	var m replyMetrics
 	m.record(agent.RunResult{Answer: "no usage"})
 	m.record(agent.RunResult{
-		Answer: "no time",
-		Usage:  backend.Usage{CompletionTokens: 10},
+		Answer:  "no time",
+		Replies: []agent.ReplyStat{{Usage: backend.Usage{CompletionTokens: 10}}},
 	})
 	m.record(measured(20, time.Second))
 
@@ -79,6 +81,32 @@ func TestReplyMetricsZeroValue(t *testing.T) {
 	m.record(measured(5, time.Second))
 	if m.replies != 1 || m.minRate != 5.0 {
 		t.Errorf("after one record: %+v, want 1 reply at 5.0 tok/s", m)
+	}
+}
+
+// TestReplyMetricsCountsEveryReplyOfAStep pins the throughput
+// accounting: a step whose model answered with a tool call first
+// contributes both round trips - the tool turn and the final answer -
+// because the session's rate is the rate of every reply the model
+// generated, not of the answers alone.
+func TestReplyMetricsCountsEveryReplyOfAStep(t *testing.T) {
+	var m replyMetrics
+	m.record(agent.RunResult{
+		Answer: "the answer",
+		Turns:  2,
+		Replies: []agent.ReplyStat{
+			{Usage: backend.Usage{CompletionTokens: 7}, Elapsed: time.Second},      // tool turn: 7 tok/s
+			{Usage: backend.Usage{CompletionTokens: 42}, Elapsed: 2 * time.Second}, // final: 21 tok/s
+		},
+	})
+	if m.replies != 2 {
+		t.Errorf("replies = %d, want 2 (tool turn + final answer)", m.replies)
+	}
+	if m.tokens != 49 {
+		t.Errorf("tokens = %d, want 49", m.tokens)
+	}
+	if m.minRate != 7.0 || m.maxRate != 21.0 || m.average() != 14.0 {
+		t.Errorf("rates = min %v avg %v max %v, want 7/14/21", m.minRate, m.average(), m.maxRate)
 	}
 }
 
@@ -111,7 +139,7 @@ func TestChatMetricsCommand(t *testing.T) {
 
 	m, _ = runCommand(m, "/metrics")
 	transcript := strings.Join(m.lines, "\n")
-	if !strings.Contains(transcript, "2 replies · 126 completion tokens") {
+	if !strings.Contains(transcript, "2 model replies · 126 completion tokens") {
 		t.Errorf("counts line missing: %q", transcript)
 	}
 	if !strings.Contains(transcript, "tok/s: min 21.0 · avg 31.5 · max 42.0") {

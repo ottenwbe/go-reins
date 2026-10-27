@@ -196,30 +196,57 @@ func (a *Agent) BackendName() string { return a.backend.Name() }
 // compare Backend().Name() later to spot results gone stale.
 func (a *Agent) Backend() backend.Backend { return a.backend }
 
-// RunResult captures the outcome of a single Run: the final answer,
-// how many backend round trips it took, the full conversation
-// history for review, and the token accounting of the final turn -
-// the reply that produced the answer.
-type RunResult struct {
-	Answer  string
-	Turns   int
-	History []backend.Message
+// ReplyStat is the measured token accounting of one backend round
+// trip: what the backend reported in the stream's final chunk, and
+// the wall time the trip took, measured by the agent so every
+// backend reports it the same way.
+type ReplyStat struct {
 	// Usage is the token accounting the backend reported for the
-	// final turn's reply; zero fields mean the backend reported none.
+	// reply; zero fields mean the backend reported none.
 	Usage backend.Usage
-	// Elapsed is the wall time of the final turn's backend round
-	// trip, measured here so every backend reports it the same way.
+	// Elapsed is the wall time of the round trip.
 	Elapsed time.Duration
 }
 
 // TokensPerSecond is the reply's generation rate: completion tokens
-// over the final turn's round-trip wall time. It is 0 when the
-// backend did not report a token count or no time was measured.
-func (r RunResult) TokensPerSecond() float64 {
-	if r.Usage.CompletionTokens <= 0 || r.Elapsed <= 0 {
+// over the round trip's wall time. It is 0 when the backend did not
+// report a token count or no time was measured.
+func (s ReplyStat) TokensPerSecond() float64 {
+	if s.Usage.CompletionTokens <= 0 || s.Elapsed <= 0 {
 		return 0
 	}
-	return float64(r.Usage.CompletionTokens) / r.Elapsed.Seconds()
+	return float64(s.Usage.CompletionTokens) / s.Elapsed.Seconds()
+}
+
+// RunResult captures the outcome of a single Run: the final answer,
+// how many backend round trips it took, the full conversation
+// history for review, and the token accounting of every reply the
+// model generated along the way.
+type RunResult struct {
+	Answer  string
+	Turns   int
+	History []backend.Message
+	// Replies holds one entry per backend round trip of the step, in
+	// order - the tool turns and malformed-call retries included, so
+	// session metrics can account for every reply, not just the one
+	// that became the answer.
+	Replies []ReplyStat
+}
+
+// FinalReply is the stat of the reply that produced the answer: the
+// last round trip of the step. Zero when the step made no round
+// trips (every step that returns a result made at least one).
+func (r RunResult) FinalReply() ReplyStat {
+	if len(r.Replies) == 0 {
+		return ReplyStat{}
+	}
+	return r.Replies[len(r.Replies)-1]
+}
+
+// TokensPerSecond is the generation rate of the final reply - the
+// one the answer came from. It is 0 when that reply was not measured.
+func (r RunResult) TokensPerSecond() float64 {
+	return r.FinalReply().TokensPerSecond()
 }
 
 // Run processes a user prompt through the agent loop and returns the
@@ -245,11 +272,10 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		Content: prompt,
 	})
 
-	// The stats of the final turn - the one whose reply is the
-	// answer - are what the result reports; tool turns overwrite
-	// them as the loop advances.
-	var usage backend.Usage
-	var elapsed time.Duration
+	// One stat per round trip, in order: every reply the model
+	// generated is a data point for the session metrics, whether it
+	// carried a tool call, a malformed call, or the final answer.
+	var replies []ReplyStat
 
 	for turn := 1; turn <= a.maxTurns; turn++ {
 		a.logger.Debug("agent turn", zap.Int("turn", turn), zap.Int("messages", len(history)))
@@ -258,7 +284,7 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		if err != nil {
 			return RunResult{}, err
 		}
-		usage, elapsed = resp.Usage, turnElapsed
+		replies = append(replies, ReplyStat{Usage: resp.Usage, Elapsed: turnElapsed})
 		history = append(history, backend.Message{
 			Role:    backend.RoleAssistant,
 			Content: resp.Content,
@@ -284,8 +310,7 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 				Answer:  resp.Content,
 				Turns:   turn,
 				History: history,
-				Usage:   usage,
-				Elapsed: elapsed,
+				Replies: replies,
 			}, nil
 		}
 

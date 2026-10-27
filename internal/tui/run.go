@@ -213,17 +213,19 @@ func (m *runModel) View() tea.View {
 }
 
 // usageLine renders the reply statistics shown under a finished
-// answer: the completion token count and the generation rate, when
-// the backend reported them. Empty when there is nothing to show -
-// a backend that reports no usage leaves the transcript alone.
+// answer: the completion token count and the generation rate of the
+// reply the answer came from, when the backend reported them. Empty
+// when there is nothing to show - a backend that reports no usage
+// leaves the transcript alone.
 func usageLine(res agent.RunResult) string {
-	if res.Usage.CompletionTokens <= 0 {
+	last := res.FinalReply()
+	if last.Usage.CompletionTokens <= 0 {
 		return ""
 	}
-	if rate := res.TokensPerSecond(); rate > 0 {
-		return fmt.Sprintf("%d tokens · %.1f tok/s", res.Usage.CompletionTokens, rate)
+	if rate := last.TokensPerSecond(); rate > 0 {
+		return fmt.Sprintf("%d tokens · %.1f tok/s", last.Usage.CompletionTokens, rate)
 	}
-	return fmt.Sprintf("%d tokens", res.Usage.CompletionTokens)
+	return fmt.Sprintf("%d tokens", last.Usage.CompletionTokens)
 }
 
 // renderApproval is shared by the run and chat views.

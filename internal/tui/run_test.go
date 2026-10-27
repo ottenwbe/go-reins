@@ -122,10 +122,12 @@ func TestRunModelDoneShowsUsage(t *testing.T) {
 
 	withUsage := newRunModel(a, gate, nil, "task")
 	next, _ := withUsage.Update(stepDoneMsg{res: agent.RunResult{
-		Answer:  "here it is",
-		Turns:   2,
-		Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: 42},
-		Elapsed: 2 * time.Second,
+		Answer: "here it is",
+		Turns:  2,
+		Replies: []agent.ReplyStat{{
+			Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: 42},
+			Elapsed: 2 * time.Second,
+		}},
 	}})
 	withUsage = next.(*runModel)
 	if view := withUsage.View().Content; !strings.Contains(view, "2 turn(s) · 42 tokens · 21.0 tok/s") {
