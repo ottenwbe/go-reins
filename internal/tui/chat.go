@@ -270,6 +270,9 @@ func (m *chatModel) updateStepDone(msg stepDoneMsg) tea.Cmd {
 	} else {
 		m.history = msg.res.History
 		m.appendLine(answerStyle.Render(Sanitize(msg.res.Answer)))
+		if stats := usageLine(msg.res); stats != "" {
+			m.appendLine(dimStyle.Render(stats))
+		}
 	}
 	return nil
 }

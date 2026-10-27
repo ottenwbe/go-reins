@@ -74,8 +74,11 @@ line that shows which tool the agent is using while it works. The
 reply forms in the transcript itself as it streams in, and the
 input area pauses while the agent works or an approval pends -
 keystrokes are swallowed in those states, and the pause note says
-so instead of a silent input. The conversation persists across
-prompts for the whole session; ctrl+c quits. Requires a terminal.
+so instead of a silent input. When the backend reports token
+counts, a dim line under each answer shows the reply's size and
+generation rate (`128 tokens · 42.3 tok/s`). The conversation
+persists across prompts for the whole session; ctrl+c quits.
+Requires a terminal.
 
 Slash commands manage the live session and never reach the model:
 
@@ -259,6 +262,8 @@ request: the same gate locally and in CI.
 - [x] Streaming responses: backends stream on one wire path, the
       chat transcript shows the reply forming, truncated streams
       are rejected
+- [x] Token rate: backends report usage in the stream's final
+      chunk, and chat/run show reply tokens and tok/s per answer
 - [x] `search` tool: glob + grep over the working directory,
       read-only, with capped output
 - [ ] `edit` tool with diff approval in the TUI

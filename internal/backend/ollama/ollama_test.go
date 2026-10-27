@@ -86,6 +86,30 @@ func TestChatStreamsTokens(t *testing.T) {
 	}
 }
 
+// TestChatStreamReportsUsage pins that the token accounting on the
+// final done object becomes the response's Usage: prompt tokens from
+// prompt_eval_count, reply tokens from eval_count.
+func TestChatStreamReportsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","content":"hi"}}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":512,"eval_count":2}` + "\n"))
+	}))
+	defer srv.Close()
+
+	o, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := o.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Usage.PromptTokens != 512 || resp.Usage.CompletionTokens != 2 {
+		t.Errorf("usage = %+v, want {PromptTokens:512 CompletionTokens:2}", resp.Usage)
+	}
+}
+
 // TestChatStreamCarriesErrorLine pins that an error object streamed
 // mid-answer fails the call with the server's own message.
 func TestChatStreamCarriesErrorLine(t *testing.T) {

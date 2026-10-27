@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -485,6 +486,65 @@ func TestRunCorrectsBadToolCallArguments(t *testing.T) {
 	}
 	if res.Answer != "It is raining in Berlin." || len(weather.calls) != 1 {
 		t.Errorf("answer=%q calls=%v, want the corrected call to have run", res.Answer, weather.calls)
+	}
+}
+
+// TestRunReportsUsageAndRate pins the token accounting a Run
+// carries: the backend-reported usage of the final turn, a measured
+// round-trip wall time, and the rate derived from the two. A tool
+// turn before the answer must not overwrite the final turn's stats.
+func TestRunReportsUsageAndRate(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{
+			Content: `TOOLCALL weather {"city":"Berlin"}`,
+			Usage:   backend.Usage{PromptTokens: 100, CompletionTokens: 7},
+		},
+		{
+			Content: "It is raining in Berlin.",
+			Usage:   backend.Usage{PromptTokens: 120, CompletionTokens: 42},
+		},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	a := New(fb, "test-model", "be brief", []Tool{weather})
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Usage.PromptTokens != 120 || res.Usage.CompletionTokens != 42 {
+		t.Errorf("usage = %+v, want the final turn's {120 42}", res.Usage)
+	}
+	if res.Elapsed <= 0 {
+		t.Errorf("elapsed = %v, want a measured round-trip time", res.Elapsed)
+	}
+	want := 42 / res.Elapsed.Seconds()
+	if got := res.TokensPerSecond(); got != want {
+		t.Errorf("TokensPerSecond = %v, want %v (42 tokens over the round trip)", got, want)
+	}
+}
+
+// TestTokensPerSecondGuards pins the zero cases: no backend-reported
+// count or no measured time means no rate, not a division by zero
+// or a nonsense number.
+func TestTokensPerSecondGuards(t *testing.T) {
+	cases := []struct {
+		name string
+		res  RunResult
+		want float64
+	}{
+		{name: "no usage", res: RunResult{Elapsed: time.Second}, want: 0},
+		{name: "no elapsed", res: RunResult{Usage: backend.Usage{CompletionTokens: 10}}, want: 0},
+		{name: "both present", res: RunResult{
+			Usage:   backend.Usage{CompletionTokens: 10},
+			Elapsed: 2 * time.Second,
+		}, want: 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.res.TokensPerSecond(); got != tc.want {
+				t.Errorf("TokensPerSecond = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

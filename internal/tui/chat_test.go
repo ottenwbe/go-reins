@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -1123,6 +1124,41 @@ func TestChatInfoCommand(t *testing.T) {
 	}
 	if m.state != chatReady {
 		t.Errorf("state = %v, want chatReady", m.state)
+	}
+}
+
+// TestChatShowsUsageUnderAnswer pins the per-answer stats line: the
+// completion token count and generation rate land in the transcript
+// under the answer when the backend reported usage, and no stats
+// line appears when it did not.
+func TestChatShowsUsageUnderAnswer(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "the answer"}, "m", "sys", nil)
+	m := startChat(a, gate, nil)
+
+	next, _ := m.Update(stepDoneMsg{res: agent.RunResult{
+		Answer:  "the answer",
+		Turns:   1,
+		Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: 42},
+		Elapsed: 2 * time.Second,
+	}})
+	m = next.(*chatModel)
+	transcript := strings.Join(m.lines, "\n")
+	if !strings.Contains(transcript, "the answer") {
+		t.Errorf("answer missing from transcript: %q", transcript)
+	}
+	if !strings.Contains(transcript, "42 tokens · 21.0 tok/s") {
+		t.Errorf("stats line missing from transcript: %q", transcript)
+	}
+
+	// A backend that reports no usage: the answer stands alone.
+	bare := agent.New(&stubBackend{reply: "again"}, "m", "sys", nil)
+	m = startChat(bare, gate, nil)
+	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "again", Turns: 1}})
+	m = next.(*chatModel)
+	if strings.Contains(strings.Join(m.lines, "\n"), "tok/s") {
+		t.Errorf("stats line appeared without usage: %v", m.lines)
 	}
 }
 

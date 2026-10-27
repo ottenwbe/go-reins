@@ -87,6 +87,44 @@ func TestChatStreamsTokens(t *testing.T) {
 	}
 }
 
+// TestChatStreamReportsUsage pins the usage half of the SSE
+// protocol: the request asks for stream_options.include_usage, and
+// the usage object of the final content-free chunk becomes the
+// response's Usage - without counting as a content chunk or
+// tripping the empty-response guard.
+func TestChatStreamReportsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		opts, _ := req["stream_options"].(map[string]any)
+		if opts["include_usage"] != true {
+			t.Errorf("stream_options = %v, want include_usage: true", req["stream_options"])
+		}
+		_, _ = w.Write([]byte(
+			"data: " + `{"choices":[{"delta":{"content":"hi"}}]}` + "\n\n" +
+				"data: " + `{"choices":[],"usage":{"prompt_tokens":512,"completion_tokens":2}}` + "\n\n" +
+				"data: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if resp.Content != "hi" {
+		t.Errorf("content = %q, want %q", resp.Content, "hi")
+	}
+	if resp.Usage.PromptTokens != 512 || resp.Usage.CompletionTokens != 2 {
+		t.Errorf("usage = %+v, want {PromptTokens:512 CompletionTokens:2}", resp.Usage)
+	}
+}
+
 // TestChatStreamCarriesErrorChunk pins that an error object in an
 // SSE chunk fails the call with the server's own message.
 func TestChatStreamCarriesErrorChunk(t *testing.T) {

@@ -53,15 +53,23 @@ func (l *LlamaCpp) Chat(ctx context.Context, req backend.ChatRequest) (backend.C
 // ignored. The terminator is the protocol's completion marker: a
 // stream that ends without it was truncated (connection dropped
 // mid-reply, or an empty 200), so the accumulated text is rejected
-// instead of passing as a possibly short answer.
+// instead of passing as a possibly short answer. The request asks
+// for stream_options.include_usage, so the chunk before the
+// terminator carries the token accounting (prompt_tokens,
+// completion_tokens) in its usage object; that object becomes the
+// response's Usage.
 func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDelta func(string)) (backend.ChatResponse, error) {
 	var full strings.Builder
+	var usage backend.Usage
 	chunks := 0
 	sawDone := false
 	err := backend.PostJSONLines(ctx, l.client, l.baseURL, "/v1/chat/completions", map[string]any{
 		"model":    req.Model,
 		"messages": req.Messages,
 		"stream":   true,
+		"stream_options": map[string]any{
+			"include_usage": true,
+		},
 	}, func(line []byte) error {
 		s := string(line)
 		if !strings.HasPrefix(s, "data:") {
@@ -81,6 +89,10 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 					Content string `json:"content"`
 				} `json:"delta"`
 			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -91,8 +103,14 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 		if chunk.Error != nil && chunk.Error.Message != "" {
 			return errors.New(chunk.Error.Message)
 		}
+		if chunk.Usage != nil {
+			usage = backend.Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+			}
+		}
 		if len(chunk.Choices) == 0 {
-			return nil
+			return nil // the usage-only chunk carries no content
 		}
 		chunks++
 		if c := chunk.Choices[0].Delta.Content; c != "" {
@@ -112,7 +130,7 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 	if chunks == 0 {
 		return backend.ChatResponse{}, errors.New("llamacpp: empty response")
 	}
-	return backend.ChatResponse{Content: full.String()}, nil
+	return backend.ChatResponse{Content: full.String(), Usage: usage}, nil
 }
 
 // Models implements backend.Backend via the OpenAI-style /v1/models

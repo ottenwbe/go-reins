@@ -30,6 +30,20 @@ type ChatRequest struct {
 // ChatResponse is the model's reply.
 type ChatResponse struct {
 	Content string
+	// Usage carries the token counts the backend measured for the
+	// reply, when it reports them. Zero fields mean the backend
+	// said nothing about usage, not that no tokens moved.
+	Usage Usage
+}
+
+// Usage is the token accounting of one reply, as the backend
+// reported it in the stream's final chunk.
+type Usage struct {
+	// PromptTokens is the size of the processed conversation.
+	PromptTokens int
+	// CompletionTokens is the number of tokens the reply contains -
+	// the number a token/s rate is measured against.
+	CompletionTokens int
 }
 
 // Backend is an inference backend (Ollama, llama.cpp server, ...).
