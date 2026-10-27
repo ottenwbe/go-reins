@@ -35,7 +35,7 @@ func (f *failModels) Models(context.Context) ([]string, error) {
 // startChat builds a chat model in the state the command tests
 // exercise: input focused and a window size applied.
 func startChat(a *agent.Agent, gate *ApprovalGate, switchBackend func(string) error) *chatModel {
-	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", switchBackend)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "dev", "go-reins chat", switchBackend)
 	m.Init()
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return next.(*chatModel)
@@ -56,7 +56,7 @@ func TestChatModelStepFlow(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "the answer"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "dev", "go-reins chat", nil)
 	m.Init() // focuses the input area
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -116,7 +116,7 @@ func TestChatShowsCurrentTool(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, nil, "go-reins chat", nil)
+	m := newChatModel(a, gate, feed, nil, "dev", "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -152,7 +152,7 @@ func TestChatModelMultilineInput(t *testing.T) {
 	gate := NewApprovalGate()
 	defer gate.Close()
 	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), nil, "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "dev", "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -191,7 +191,7 @@ func TestChatDropsStaleToolEvents(t *testing.T) {
 	feed := NewToolFeed()
 	defer feed.Close()
 	a := agent.New(&stubBackend{reply: "done"}, "m", "sys", nil)
-	m := newChatModel(a, gate, feed, nil, "go-reins chat", nil)
+	m := newChatModel(a, gate, feed, nil, "dev", "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -809,7 +809,7 @@ func TestChatStreamsIntoTranscript(t *testing.T) {
 	stream := NewStreamFeed()
 	defer stream.Close()
 	a := agent.New(&stubBackend{reply: "the full answer"}, "m", "sys", nil)
-	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), stream, "dev", "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -872,7 +872,7 @@ func TestChatStreamsAcrossApproval(t *testing.T) {
 		agent.WithApprover(func(tool, args string) bool {
 			return <-reply
 		}))
-	m := newChatModel(a, gate, NewToolFeed(), stream, "go-reins chat", nil)
+	m := newChatModel(a, gate, NewToolFeed(), stream, "dev", "go-reins chat", nil)
 	m.Init()
 
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -1092,5 +1092,55 @@ func TestChatCompactKeepsHistoryOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(m.lines, "\n"), "empty summary") {
 		t.Error("empty-summary note missing from the transcript")
+	}
+}
+
+// TestChatInfoCommand pins /info: the same build story the info
+// command prints, rendered dim into the transcript - the release
+// version first, then what the toolchain embedded.
+func TestChatInfoCommand(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+	m := newChatModel(a, gate, NewToolFeed(), nil, "test-1.2.3", "go-reins chat", nil)
+	m.Init()
+
+	m, _ = runCommand(m, "/info")
+	logged := strings.Join(m.lines, "\n")
+	if !strings.Contains(logged, "go-reins test-1.2.3") {
+		t.Errorf("version missing from /info:\n%s", logged)
+	}
+	// The toolchain embeds these in every module build; a dev build
+	// reports the running Go version and platform.
+	if !strings.Contains(logged, "go go1.") {
+		t.Errorf("Go version missing from /info:\n%s", logged)
+	}
+	if !strings.Contains(logged, "platform ") {
+		t.Errorf("platform missing from /info:\n%s", logged)
+	}
+	if !strings.Contains(logged, "module go-reins (") {
+		t.Errorf("module metadata missing from /info:\n%s", logged)
+	}
+	if m.state != chatReady {
+		t.Errorf("state = %v, want chatReady", m.state)
+	}
+}
+
+func TestShortenPreservesUTF8Boundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		n    int
+		want string
+	}{
+		{name: "cut before multibyte rune", text: "aéz", n: 2, want: "a…"},
+		{name: "cut after multibyte rune", text: "aéz", n: 3, want: "aé…"},
+		{name: "keep complete string", text: "aéz", n: 4, want: "aéz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shorten(tc.text, tc.n); got != tc.want {
+				t.Errorf("shorten(%q, %d) = %q, want %q", tc.text, tc.n, got, tc.want)
+			}
+		})
 	}
 }
