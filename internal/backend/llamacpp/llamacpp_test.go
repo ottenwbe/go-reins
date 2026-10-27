@@ -125,6 +125,54 @@ func TestChatStreamReportsUsage(t *testing.T) {
 	}
 }
 
+// TestChatStreamAcceptsUsageOnlyReply pins that a stream whose only
+// payload is the usage chunk - a valid empty reply with token
+// accounting, the shape include_usage produces when the model
+// generated nothing - is accepted, not rejected as an empty
+// response.
+func TestChatStreamAcceptsUsageOnlyReply(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(
+			"data: " + `{"choices":[],"usage":{"prompt_tokens":512,"completion_tokens":0}}` + "\n\n" +
+				"data: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resp, err := l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err != nil {
+		t.Fatalf("ChatStream: %v, want a usage-only stream accepted", err)
+	}
+	if resp.Content != "" {
+		t.Errorf("content = %q, want empty", resp.Content)
+	}
+	if resp.Usage.PromptTokens != 512 {
+		t.Errorf("usage = %+v, want the reported prompt tokens", resp.Usage)
+	}
+}
+
+// TestChatStreamRejectsEmptyStream pins the guard the usage-only
+// case relaxes: a stream that carried neither content nor usage is
+// a broken response, not a short answer.
+func TestChatStreamRejectsEmptyStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("data: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	l, err := New(backend.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = l.ChatStream(context.Background(), backend.ChatRequest{Model: "m"}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Errorf("ChatStream error = %v, want the empty-response error", err)
+	}
+}
+
 // TestChatStreamCarriesErrorChunk pins that an error object in an
 // SSE chunk fails the call with the server's own message.
 func TestChatStreamCarriesErrorChunk(t *testing.T) {

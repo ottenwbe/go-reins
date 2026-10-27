@@ -57,10 +57,14 @@ func (l *LlamaCpp) Chat(ctx context.Context, req backend.ChatRequest) (backend.C
 // for stream_options.include_usage, so the chunk before the
 // terminator carries the token accounting (prompt_tokens,
 // completion_tokens) in its usage object; that object becomes the
-// response's Usage.
+// response's Usage. The empty-response guard fires only when the
+// stream carried neither content nor usage: a server that answers
+// with a usage-only final chunk reported a valid - empty - reply,
+// not a broken one.
 func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDelta func(string)) (backend.ChatResponse, error) {
 	var full strings.Builder
 	var usage backend.Usage
+	sawUsage := false
 	chunks := 0
 	sawDone := false
 	err := backend.PostJSONLines(ctx, l.client, l.baseURL, "/v1/chat/completions", map[string]any{
@@ -104,6 +108,7 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 			return errors.New(chunk.Error.Message)
 		}
 		if chunk.Usage != nil {
+			sawUsage = true
 			usage = backend.Usage{
 				PromptTokens:     chunk.Usage.PromptTokens,
 				CompletionTokens: chunk.Usage.CompletionTokens,
@@ -127,7 +132,7 @@ func (l *LlamaCpp) ChatStream(ctx context.Context, req backend.ChatRequest, onDe
 	if !sawDone {
 		return backend.ChatResponse{}, errors.New("llamacpp: stream ended before the terminator")
 	}
-	if chunks == 0 {
+	if chunks == 0 && !sawUsage {
 		return backend.ChatResponse{}, errors.New("llamacpp: empty response")
 	}
 	return backend.ChatResponse{Content: full.String(), Usage: usage}, nil
