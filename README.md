@@ -89,6 +89,7 @@ Slash commands manage the live session and never reach the model:
 | `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
 | `/compact` | ask the model to summarize the session and replace the history with the summary |
 | `/info` | print this binary's build info in the transcript |
+| `/metrics` | show session token-rate stats: reply count, tokens, min/avg/max tok/s |
 | `/debug` | toggle the state overlay (debug builds only, below) |
 
 The header line always shows the backend and model the next request
@@ -263,7 +264,8 @@ request: the same gate locally and in CI.
       chat transcript shows the reply forming, truncated streams
       are rejected
 - [x] Token rate: backends report usage in the stream's final
-      chunk, and chat/run show reply tokens and tok/s per answer
+      chunk, chat/run show reply tokens and tok/s per answer, and
+      chat's `/metrics` rolls the session up into min/avg/max tok/s
 - [x] `search` tool: glob + grep over the working directory,
       read-only, with capped output
 - [ ] `edit` tool with diff approval in the TUI
