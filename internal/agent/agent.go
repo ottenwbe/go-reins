@@ -229,7 +229,8 @@ type RunResult struct {
 	// Replies holds one entry per backend round trip of the step, in
 	// order - the tool turns and malformed-call retries included, so
 	// session metrics can account for every reply, not just the one
-	// that became the answer.
+	// that became the answer. If the step fails, it still contains
+	// the replies completed before the failure.
 	Replies []ReplyStat
 }
 
@@ -272,9 +273,11 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		Content: prompt,
 	})
 
-	// One stat per round trip, in order: every reply the model
-	// generated is a data point for the session metrics, whether it
-	// carried a tool call, a malformed call, or the final answer.
+	// One stat per completed round trip, in order: every reply the
+	// model generated is a data point for the session metrics,
+	// whether it carried a tool call, a malformed call, or the final
+	// answer. Completed replies remain available if a later turn
+	// fails.
 	var replies []ReplyStat
 
 	for turn := 1; turn <= a.maxTurns; turn++ {

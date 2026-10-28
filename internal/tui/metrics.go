@@ -9,10 +9,11 @@ import (
 // replyMetrics accumulates the token-rate statistics of a session's
 // model replies: how many replies were measured, how many completion
 // tokens they carried, and the min/avg/max generation rate. Every
-// backend round trip of every step is a data point - tool turns and
-// retries included. It backs the chat's /metrics command; the
-// per-answer line under each answer (usageLine) reports the single
-// newest data point, this rolls the whole session up.
+// completed backend round trip of every step is a data point - tool
+// turns and retries included, including steps that end in an error.
+// It backs the chat's /metrics command; the per-answer line under
+// each answer (usageLine) reports the single newest data point, this
+// rolls the whole session up.
 //
 // The zero value is an empty accumulator: record and the rendering
 // are safe before anything has been measured.
