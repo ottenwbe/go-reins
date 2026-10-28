@@ -282,7 +282,7 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 
 		resp, turnElapsed, err := a.chat(ctx, turn, history)
 		if err != nil {
-			return RunResult{}, err
+			return RunResult{Replies: replies}, err
 		}
 		replies = append(replies, ReplyStat{Usage: resp.Usage, Elapsed: turnElapsed})
 		history = append(history, backend.Message{
@@ -317,7 +317,7 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		history = append(history, a.runToolCall(ctx, name, args))
 	}
 
-	return RunResult{}, fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
+	return RunResult{Replies: replies}, fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
 }
 
 // seedHistory returns a conversation ready for the user prompt: an

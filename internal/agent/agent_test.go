@@ -18,6 +18,7 @@ type fakeBackend struct {
 	reply   backend.ChatResponse
 	replies []backend.ChatResponse
 	calls   []backend.ChatRequest
+	err     error
 }
 
 func (f *fakeBackend) Name() string { return "fake" }
@@ -32,6 +33,9 @@ func (f *fakeBackend) Chat(_ context.Context, req backend.ChatRequest) (backend.
 		next := f.replies[0]
 		f.replies = f.replies[1:]
 		return next, nil
+	}
+	if f.err != nil {
+		return backend.ChatResponse{}, f.err
 	}
 	return f.reply, nil
 }
@@ -529,6 +533,43 @@ func TestRunReportsEveryReply(t *testing.T) {
 	want := 42 / final.Elapsed.Seconds()
 	if got := res.TokensPerSecond(); got != want {
 		t.Errorf("TokensPerSecond = %v, want %v (the final reply's rate)", got, want)
+	}
+}
+
+func TestRunPreservesRepliesWhenBackendFails(t *testing.T) {
+	fb := &fakeBackend{
+		replies: []backend.ChatResponse{{
+			Content: `TOOLCALL weather {"city":"Berlin"}`,
+			Usage:   backend.Usage{CompletionTokens: 7},
+		}},
+		err: errors.New("backend unavailable"),
+	}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	a := New(fb, "test-model", "be brief", []Tool{weather})
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err == nil || !strings.Contains(err.Error(), "backend unavailable") {
+		t.Fatalf("Run error = %v, want backend failure", err)
+	}
+	if len(res.Replies) != 1 || res.Replies[0].Usage.CompletionTokens != 7 {
+		t.Errorf("replies = %+v, want the completed tool-call reply preserved", res.Replies)
+	}
+}
+
+func TestRunPreservesRepliesWhenTurnBudgetIsExceeded(t *testing.T) {
+	fb := &fakeBackend{reply: backend.ChatResponse{
+		Content: `TOOLCALL weather {"city":"Berlin"}`,
+		Usage:   backend.Usage{CompletionTokens: 7},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	a := New(fb, "test-model", "be brief", []Tool{weather}, WithMaxTurns(2))
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err == nil || !strings.Contains(err.Error(), "exceeded 2 turns") {
+		t.Fatalf("Run error = %v, want turn-budget error", err)
+	}
+	if len(res.Replies) != 2 || res.Replies[0].Usage.CompletionTokens != 7 || res.Replies[1].Usage.CompletionTokens != 7 {
+		t.Errorf("replies = %+v, want both completed replies preserved", res.Replies)
 	}
 }
 

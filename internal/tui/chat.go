@@ -266,12 +266,12 @@ func (m *chatModel) updateStepDone(msg stepDoneMsg) tea.Cmd {
 	}
 	m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 	m.layout() // the input area returns: the textarea replaces the pause line
+	m.metrics.record(msg.res)
 	if msg.err != nil {
 		m.appendLine(errorStyle.Render(Sanitize("error: " + msg.err.Error())))
 	} else {
 		m.history = msg.res.History
 		m.appendLine(answerStyle.Render(Sanitize(msg.res.Answer)))
-		m.metrics.record(msg.res)
 		if stats := usageLine(msg.res); stats != "" {
 			m.appendLine(dimStyle.Render(stats))
 		}

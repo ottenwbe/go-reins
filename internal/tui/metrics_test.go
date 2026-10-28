@@ -131,18 +131,22 @@ func TestChatMetricsCommand(t *testing.T) {
 	m = next.(*chatModel)
 	next, _ = m.Update(stepDoneMsg{res: measured(84, 2*time.Second)})
 	m = next.(*chatModel)
-	// An unmeasured reply and a failed step change nothing.
+	// An unmeasured reply changes nothing; a failed step still
+	// contributes its completed reply stats.
 	next, _ = m.Update(stepDoneMsg{res: agent.RunResult{Answer: "no usage", Turns: 1}})
 	m = next.(*chatModel)
-	next, _ = m.Update(stepDoneMsg{err: errors.New("backend down")})
+	next, _ = m.Update(stepDoneMsg{
+		res: measured(20, time.Second),
+		err: errors.New("backend down"),
+	})
 	m = next.(*chatModel)
 
 	m, _ = runCommand(m, "/metrics")
 	transcript := strings.Join(m.lines, "\n")
-	if !strings.Contains(transcript, "2 model replies · 126 completion tokens") {
+	if !strings.Contains(transcript, "3 model replies · 146 completion tokens") {
 		t.Errorf("counts line missing: %q", transcript)
 	}
-	if !strings.Contains(transcript, "tok/s: min 21.0 · avg 31.5 · max 42.0") {
+	if !strings.Contains(transcript, "tok/s: min 20.0 · avg 27.7 · max 42.0") {
 		t.Errorf("rates line missing: %q", transcript)
 	}
 
