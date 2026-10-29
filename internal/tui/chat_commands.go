@@ -179,6 +179,10 @@ func (m *chatModel) command(line string) tea.Cmd {
 		m.appendLine(dimStyle.Render(m.infoLines()))
 		return nil
 
+	case "/metrics":
+		m.appendLine(dimStyle.Render(m.metricsLines()))
+		return nil
+
 	case "/compact":
 		return m.compact()
 
@@ -188,7 +192,7 @@ func (m *chatModel) command(line string) tea.Cmd {
 		return m.debugCommand()
 
 	default:
-		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>, /compact, /info" + debugCommands))
+		m.appendLine(errorStyle.Render("unknown command " + name + " · available: /models, /model <name>, /backend <name>, /compact, /info, /metrics" + debugCommands))
 		return nil
 	}
 }

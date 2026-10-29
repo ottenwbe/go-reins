@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -108,5 +109,35 @@ func TestRunModelDoneAndError(t *testing.T) {
 	failing = next.(*runModel)
 	if failing.state != runError || !strings.Contains(failing.View().Content, "backend down") {
 		t.Errorf("error state = %v, view = %q", failing.state, failing.View().Content)
+	}
+}
+
+// TestRunModelDoneShowsUsage pins the done frame's stats: the turn
+// count extended with the token count and rate when the backend
+// reported usage, turns alone when it did not.
+func TestRunModelDoneShowsUsage(t *testing.T) {
+	gate := NewApprovalGate()
+	defer gate.Close()
+	a := agent.New(&stubBackend{reply: "ok"}, "m", "sys", nil)
+
+	withUsage := newRunModel(a, gate, nil, "task")
+	next, _ := withUsage.Update(stepDoneMsg{res: agent.RunResult{
+		Answer: "here it is",
+		Turns:  2,
+		Replies: []agent.ReplyStat{{
+			Usage:   backend.Usage{PromptTokens: 512, CompletionTokens: 42},
+			Elapsed: 2 * time.Second,
+		}},
+	}})
+	withUsage = next.(*runModel)
+	if view := withUsage.View().Content; !strings.Contains(view, "2 turn(s) · 42 tokens · 21.0 tok/s") {
+		t.Errorf("done view missing the stats line: %q", view)
+	}
+
+	bare := newRunModel(a, gate, nil, "task")
+	next, _ = bare.Update(stepDoneMsg{res: agent.RunResult{Answer: "ok", Turns: 1}})
+	bare = next.(*runModel)
+	if view := bare.View().Content; !strings.Contains(view, "1 turn(s)") || strings.Contains(view, "tok/s") {
+		t.Errorf("done view without usage should show turns only: %q", view)
 	}
 }

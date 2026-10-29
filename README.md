@@ -74,8 +74,11 @@ line that shows which tool the agent is using while it works. The
 reply forms in the transcript itself as it streams in, and the
 input area pauses while the agent works or an approval pends -
 keystrokes are swallowed in those states, and the pause note says
-so instead of a silent input. The conversation persists across
-prompts for the whole session; ctrl+c quits. Requires a terminal.
+so instead of a silent input. When the backend reports token
+counts, a dim line under each answer shows the reply's size and
+generation rate (`128 tokens · 42.3 tok/s`). The conversation
+persists across prompts for the whole session; ctrl+c quits.
+Requires a terminal.
 
 Slash commands manage the live session and never reach the model:
 
@@ -86,6 +89,7 @@ Slash commands manage the live session and never reach the model:
 | `/backend <ollama\|llamacpp>` | swap the backend mid-conversation |
 | `/compact` | ask the model to summarize the session and replace the history with the summary |
 | `/info` | print this binary's build info in the transcript |
+| `/metrics` | show session token-rate stats over every model reply (tool turns included): count, tokens, min/avg/max tok/s |
 | `/debug` | toggle the state overlay (debug builds only, below) |
 
 The header line always shows the backend and model the next request
@@ -142,16 +146,25 @@ The agent's tool set is small, explicit, and risk-tiered:
 | --- | --- | --- |
 | `read` | read-only | returns a file under the working directory with 1-based line numbers, windowed by `offset`/`limit` |
 | `search` | read-only | finds files by glob (`**` spans directories) and, with a `query`, returns matching lines as `path:line:text` |
-| `shell` | mutating | runs a shell command under the working directory; every call asks the operator unless `--yes` or `tool-risk` says otherwise |
+| `shell` | mutating | runs a shell command starting in the current working directory; every call asks the operator unless `--yes` or `tool-risk` says otherwise |
 
 Read-only tools run without approval; mutating ones are gated per
-call. All tools are confined to the working directory — `read`
-resolves symlinks and refuses anything that escapes it, and
-`search` considers regular files only, so a symlink planted in the
-tree cannot leak a file from outside it. `search` skips hidden
-files and directories the way ripgrep does, skips binary content,
-and caps its observation like the other tools — a broad glob over
-a big tree cannot blow up the conversation.
+call. The `read` and `search` tools are confined to the working
+directory: `read` resolves symlinks and refuses anything that
+escapes it, and `search` considers regular files only. It also skips
+hidden files and directories the way ripgrep does, skips binary
+content, and caps its observation.
+
+**This is not an OS-level sandbox.** The shell command runs with the
+same user permissions and environment as `go-reins`; starting in the
+working directory does not prevent it from accessing other paths or
+the network. Approval is a confirmation gate, not isolation:
+`--yes` and a `tool-risk` override can bypass the prompt, but do not
+restrict command capabilities. Shell commands have a timeout and
+their captured output is capped, but these limits do not contain
+their effects. For untrusted commands, run `go-reins` inside an
+appropriately restricted OS account or container/VM; configure its
+filesystem mounts, privileges, and network access accordingly.
 
 ## Configuration
 
@@ -184,7 +197,7 @@ backend: ollama
 model: llama3.2
 tools: [read, shell]
 tool-risk:
-  shell: read-only   # sandboxed shell: no approval prompt
+  shell: read-only   # no approval prompt; does not sandbox the shell
 ```
 
 `tools` selects which tools the agent loads; `tool-risk` overrides
@@ -259,6 +272,9 @@ request: the same gate locally and in CI.
 - [x] Streaming responses: backends stream on one wire path, the
       chat transcript shows the reply forming, truncated streams
       are rejected
+- [x] Token rate: backends report usage in the stream's final
+      chunk, chat/run show reply tokens and tok/s per answer, and
+      chat's `/metrics` rolls the session up into min/avg/max tok/s
 - [x] `search` tool: glob + grep over the working directory,
       read-only, with capped output
 - [ ] `edit` tool with diff approval in the TUI

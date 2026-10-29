@@ -52,9 +52,12 @@ func (o *Ollama) Chat(ctx context.Context, req backend.ChatRequest) (backend.Cha
 // object is the protocol's completion marker: a stream that ends
 // without it was truncated (connection dropped mid-reply, or an
 // empty 200), so the accumulated text is rejected instead of
-// passing as a possibly short answer.
+// passing as a possibly short answer. The final object also
+// carries the token accounting - prompt_eval_count and eval_count -
+// which becomes the response's Usage.
 func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelta func(string)) (backend.ChatResponse, error) {
 	var full strings.Builder
+	var usage backend.Usage
 	sawDone := false
 	err := backend.PostJSONLines(ctx, o.client, o.baseURL, "/api/chat", map[string]any{
 		"model":    req.Model,
@@ -65,8 +68,10 @@ func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelt
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
-			Done  bool   `json:"done"`
-			Error string `json:"error"`
+			Done            bool   `json:"done"`
+			Error           string `json:"error"`
+			PromptEvalCount int    `json:"prompt_eval_count"`
+			EvalCount       int    `json:"eval_count"`
 		}
 		if err := json.Unmarshal(line, &chunk); err != nil {
 			return fmt.Errorf("decode chunk: %w", err)
@@ -76,6 +81,10 @@ func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelt
 		}
 		if chunk.Done {
 			sawDone = true
+			usage = backend.Usage{
+				PromptTokens:     chunk.PromptEvalCount,
+				CompletionTokens: chunk.EvalCount,
+			}
 		}
 		if c := chunk.Message.Content; c != "" {
 			full.WriteString(c)
@@ -91,7 +100,7 @@ func (o *Ollama) ChatStream(ctx context.Context, req backend.ChatRequest, onDelt
 	if !sawDone {
 		return backend.ChatResponse{}, errors.New("ollama: stream ended before the final chunk")
 	}
-	return backend.ChatResponse{Content: full.String()}, nil
+	return backend.ChatResponse{Content: full.String(), Usage: usage}, nil
 }
 
 // Models implements backend.Backend via Ollama's /api/tags: every

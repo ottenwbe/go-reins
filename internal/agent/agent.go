@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -195,13 +196,58 @@ func (a *Agent) BackendName() string { return a.backend.Name() }
 // compare Backend().Name() later to spot results gone stale.
 func (a *Agent) Backend() backend.Backend { return a.backend }
 
+// ReplyStat is the measured token accounting of one backend round
+// trip: what the backend reported in the stream's final chunk, and
+// the wall time the trip took, measured by the agent so every
+// backend reports it the same way.
+type ReplyStat struct {
+	// Usage is the token accounting the backend reported for the
+	// reply; zero fields mean the backend reported none.
+	Usage backend.Usage
+	// Elapsed is the wall time of the round trip.
+	Elapsed time.Duration
+}
+
+// TokensPerSecond is the reply's generation rate: completion tokens
+// over the round trip's wall time. It is 0 when the backend did not
+// report a token count or no time was measured.
+func (s ReplyStat) TokensPerSecond() float64 {
+	if s.Usage.CompletionTokens <= 0 || s.Elapsed <= 0 {
+		return 0
+	}
+	return float64(s.Usage.CompletionTokens) / s.Elapsed.Seconds()
+}
+
 // RunResult captures the outcome of a single Run: the final answer,
-// how many backend round trips it took, and the full conversation
-// history for review.
+// how many backend round trips it took, the full conversation
+// history for review, and the token accounting of every reply the
+// model generated along the way.
 type RunResult struct {
 	Answer  string
 	Turns   int
 	History []backend.Message
+	// Replies holds one entry per backend round trip of the step, in
+	// order - the tool turns and malformed-call retries included, so
+	// session metrics can account for every reply, not just the one
+	// that became the answer. If the step fails, it still contains
+	// the replies completed before the failure.
+	Replies []ReplyStat
+}
+
+// FinalReply is the stat of the reply that produced the answer: the
+// last round trip of the step. Zero when the step made no round
+// trips (every step that returns a result made at least one).
+func (r RunResult) FinalReply() ReplyStat {
+	if len(r.Replies) == 0 {
+		return ReplyStat{}
+	}
+	return r.Replies[len(r.Replies)-1]
+}
+
+// TokensPerSecond is the generation rate of the final reply - the
+// one the answer came from. It is 0 when that reply was not measured.
+func (r RunResult) TokensPerSecond() float64 {
+	return r.FinalReply().TokensPerSecond()
 }
 
 // Run processes a user prompt through the agent loop and returns the
@@ -227,13 +273,21 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 		Content: prompt,
 	})
 
+	// One stat per completed round trip, in order: every reply the
+	// model generated is a data point for the session metrics,
+	// whether it carried a tool call, a malformed call, or the final
+	// answer. Completed replies remain available if a later turn
+	// fails.
+	var replies []ReplyStat
+
 	for turn := 1; turn <= a.maxTurns; turn++ {
 		a.logger.Debug("agent turn", zap.Int("turn", turn), zap.Int("messages", len(history)))
 
-		resp, err := a.chat(ctx, turn, history)
+		resp, turnElapsed, err := a.chat(ctx, turn, history)
 		if err != nil {
-			return RunResult{}, err
+			return RunResult{Replies: replies}, err
 		}
+		replies = append(replies, ReplyStat{Usage: resp.Usage, Elapsed: turnElapsed})
 		history = append(history, backend.Message{
 			Role:    backend.RoleAssistant,
 			Content: resp.Content,
@@ -255,13 +309,18 @@ func (a *Agent) Step(ctx context.Context, history []backend.Message, prompt stri
 				continue
 			}
 			a.logger.Info("final answer", zap.Int("turns", turn))
-			return RunResult{Answer: resp.Content, Turns: turn, History: history}, nil
+			return RunResult{
+				Answer:  resp.Content,
+				Turns:   turn,
+				History: history,
+				Replies: replies,
+			}, nil
 		}
 
 		history = append(history, a.runToolCall(ctx, name, args))
 	}
 
-	return RunResult{}, fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
+	return RunResult{Replies: replies}, fmt.Errorf("agent: exceeded %d turns without a final answer", a.maxTurns)
 }
 
 // seedHistory returns a conversation ready for the user prompt: an
@@ -282,12 +341,15 @@ func (a *Agent) seedHistory(history []backend.Message) []backend.Message {
 // backend offers streaming, the reply text is handed to it as it
 // arrives (through the stream gate, which hides tool-call lines);
 // the full response still comes back, so the loop is unchanged.
-func (a *Agent) chat(ctx context.Context, turn int, history []backend.Message) (backend.ChatResponse, error) {
+// The round trip's wall time comes back alongside the response, so
+// a token rate can be computed from it whatever the backend serves.
+func (a *Agent) chat(ctx context.Context, turn int, history []backend.Message) (backend.ChatResponse, time.Duration, error) {
 	req := backend.ChatRequest{
 		Model:    a.model,
 		Messages: history,
 	}
 
+	start := time.Now()
 	var (
 		resp backend.ChatResponse
 		err  error
@@ -300,11 +362,12 @@ func (a *Agent) chat(ctx context.Context, turn int, history []backend.Message) (
 	} else {
 		resp, err = a.backend.Chat(ctx, req)
 	}
+	elapsed := time.Since(start)
 	if err != nil {
 		a.logger.Warn("backend chat failed", zap.Int("turn", turn), zap.Error(err))
-		return backend.ChatResponse{}, fmt.Errorf("agent: turn %d: %w", turn, err)
+		return backend.ChatResponse{}, 0, fmt.Errorf("agent: turn %d: %w", turn, err)
 	}
-	return resp, nil
+	return resp, elapsed, nil
 }
 
 // runToolCall executes one requested tool call and returns the

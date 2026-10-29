@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -17,6 +18,7 @@ type fakeBackend struct {
 	reply   backend.ChatResponse
 	replies []backend.ChatResponse
 	calls   []backend.ChatRequest
+	err     error
 }
 
 func (f *fakeBackend) Name() string { return "fake" }
@@ -31,6 +33,9 @@ func (f *fakeBackend) Chat(_ context.Context, req backend.ChatRequest) (backend.
 		next := f.replies[0]
 		f.replies = f.replies[1:]
 		return next, nil
+	}
+	if f.err != nil {
+		return backend.ChatResponse{}, f.err
 	}
 	return f.reply, nil
 }
@@ -485,6 +490,125 @@ func TestRunCorrectsBadToolCallArguments(t *testing.T) {
 	}
 	if res.Answer != "It is raining in Berlin." || len(weather.calls) != 1 {
 		t.Errorf("answer=%q calls=%v, want the corrected call to have run", res.Answer, weather.calls)
+	}
+}
+
+// TestRunReportsEveryReply pins the token accounting a Run carries:
+// one stat per backend round trip, in order - the tool turn and the
+// final answer both present, each with its backend-reported usage
+// and a measured wall time. The result's rate is the final reply's.
+func TestRunReportsEveryReply(t *testing.T) {
+	fb := &fakeBackend{replies: []backend.ChatResponse{
+		{
+			Content: `TOOLCALL weather {"city":"Berlin"}`,
+			Usage:   backend.Usage{PromptTokens: 100, CompletionTokens: 7},
+		},
+		{
+			Content: "It is raining in Berlin.",
+			Usage:   backend.Usage{PromptTokens: 120, CompletionTokens: 42},
+		},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	a := New(fb, "test-model", "be brief", []Tool{weather})
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Replies) != 2 {
+		t.Fatalf("replies = %d, want 2 (tool turn + final answer)", len(res.Replies))
+	}
+	if got := res.Replies[0].Usage; got.PromptTokens != 100 || got.CompletionTokens != 7 {
+		t.Errorf("replies[0] usage = %+v, want the tool turn's {100 7}", got)
+	}
+	final := res.FinalReply()
+	if final.Usage.PromptTokens != 120 || final.Usage.CompletionTokens != 42 {
+		t.Errorf("final reply usage = %+v, want {120 42}", final.Usage)
+	}
+	for i, r := range res.Replies {
+		if r.Elapsed <= 0 {
+			t.Errorf("replies[%d] elapsed = %v, want a measured round-trip time", i, r.Elapsed)
+		}
+	}
+	want := 42 / final.Elapsed.Seconds()
+	if got := res.TokensPerSecond(); got != want {
+		t.Errorf("TokensPerSecond = %v, want %v (the final reply's rate)", got, want)
+	}
+}
+
+func TestRunPreservesRepliesWhenBackendFails(t *testing.T) {
+	fb := &fakeBackend{
+		replies: []backend.ChatResponse{{
+			Content: `TOOLCALL weather {"city":"Berlin"}`,
+			Usage:   backend.Usage{CompletionTokens: 7},
+		}},
+		err: errors.New("backend unavailable"),
+	}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	a := New(fb, "test-model", "be brief", []Tool{weather})
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err == nil || !strings.Contains(err.Error(), "backend unavailable") {
+		t.Fatalf("Run error = %v, want backend failure", err)
+	}
+	if len(res.Replies) != 1 || res.Replies[0].Usage.CompletionTokens != 7 {
+		t.Errorf("replies = %+v, want the completed tool-call reply preserved", res.Replies)
+	}
+}
+
+func TestRunPreservesRepliesWhenTurnBudgetIsExceeded(t *testing.T) {
+	fb := &fakeBackend{reply: backend.ChatResponse{
+		Content: `TOOLCALL weather {"city":"Berlin"}`,
+		Usage:   backend.Usage{CompletionTokens: 7},
+	}}
+	weather := &fakeTool{name: "weather", desc: "weather", reply: "rain"}
+	a := New(fb, "test-model", "be brief", []Tool{weather}, WithMaxTurns(2))
+
+	res, err := a.Run(context.Background(), "weather in Berlin?")
+	if err == nil || !strings.Contains(err.Error(), "exceeded 2 turns") {
+		t.Fatalf("Run error = %v, want turn-budget error", err)
+	}
+	if len(res.Replies) != 2 || res.Replies[0].Usage.CompletionTokens != 7 || res.Replies[1].Usage.CompletionTokens != 7 {
+		t.Errorf("replies = %+v, want both completed replies preserved", res.Replies)
+	}
+}
+
+// TestTokensPerSecondGuards pins the zero cases: no backend-reported
+// count, no measured time, or no replies at all means no rate - not
+// a division by zero or a nonsense number - and the rate reported is
+// the final reply's, not an earlier turn's.
+func TestTokensPerSecondGuards(t *testing.T) {
+	cases := []struct {
+		name string
+		res  RunResult
+		want float64
+	}{
+		{name: "no replies", res: RunResult{}, want: 0},
+		{name: "no usage", res: RunResult{
+			Replies: []ReplyStat{{Elapsed: time.Second}},
+		}, want: 0},
+		{name: "no elapsed", res: RunResult{
+			Replies: []ReplyStat{{Usage: backend.Usage{CompletionTokens: 10}}},
+		}, want: 0},
+		{name: "both present", res: RunResult{
+			Replies: []ReplyStat{{
+				Usage:   backend.Usage{CompletionTokens: 10},
+				Elapsed: 2 * time.Second,
+			}},
+		}, want: 5},
+		{name: "final reply wins", res: RunResult{
+			Replies: []ReplyStat{
+				{Usage: backend.Usage{CompletionTokens: 10}, Elapsed: time.Second},
+				{Usage: backend.Usage{CompletionTokens: 20}, Elapsed: 2 * time.Second},
+			},
+		}, want: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.res.TokensPerSecond(); got != tc.want {
+				t.Errorf("TokensPerSecond = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

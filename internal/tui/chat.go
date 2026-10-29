@@ -66,10 +66,11 @@ type chatModel struct {
 	approval   *ApprovalRequest
 	tool       ToolEvent // tool of the running step, for the status line
 	step       *stepScope
-	modelSeq   int  // generation of the newest model-deciding command (/model, /backend); older results are dropped
-	appliedSeq int  // generation of the newest command that actually selected a model; only that suppresses the switch fallback
-	compacting bool // /compact round trip in flight; shows in the status word and settles its own message
-	debug      bool // /debug: show the state overlay in the status area; off unless asked for
+	modelSeq   int          // generation of the newest model-deciding command (/model, /backend); older results are dropped
+	appliedSeq int          // generation of the newest command that actually selected a model; only that suppresses the switch fallback
+	compacting bool         // /compact round trip in flight; shows in the status word and settles its own message
+	debug      bool         // /debug: show the state overlay in the status area; off unless asked for
+	metrics    replyMetrics // token-rate stats over the session's replies; backs /metrics
 	width      int
 	height     int
 }
@@ -265,11 +266,15 @@ func (m *chatModel) updateStepDone(msg stepDoneMsg) tea.Cmd {
 	}
 	m.prompt, m.tool, m.live, m.state = "", ToolEvent{}, "", chatReady
 	m.layout() // the input area returns: the textarea replaces the pause line
+	m.metrics.record(msg.res)
 	if msg.err != nil {
 		m.appendLine(errorStyle.Render(Sanitize("error: " + msg.err.Error())))
 	} else {
 		m.history = msg.res.History
 		m.appendLine(answerStyle.Render(Sanitize(msg.res.Answer)))
+		if stats := usageLine(msg.res); stats != "" {
+			m.appendLine(dimStyle.Render(stats))
+		}
 	}
 	return nil
 }
