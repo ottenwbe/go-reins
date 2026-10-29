@@ -146,16 +146,25 @@ The agent's tool set is small, explicit, and risk-tiered:
 | --- | --- | --- |
 | `read` | read-only | returns a file under the working directory with 1-based line numbers, windowed by `offset`/`limit` |
 | `search` | read-only | finds files by glob (`**` spans directories) and, with a `query`, returns matching lines as `path:line:text` |
-| `shell` | mutating | runs a shell command under the working directory; every call asks the operator unless `--yes` or `tool-risk` says otherwise |
+| `shell` | mutating | runs a shell command starting in the current working directory; every call asks the operator unless `--yes` or `tool-risk` says otherwise |
 
 Read-only tools run without approval; mutating ones are gated per
-call. All tools are confined to the working directory — `read`
-resolves symlinks and refuses anything that escapes it, and
-`search` considers regular files only, so a symlink planted in the
-tree cannot leak a file from outside it. `search` skips hidden
-files and directories the way ripgrep does, skips binary content,
-and caps its observation like the other tools — a broad glob over
-a big tree cannot blow up the conversation.
+call. The `read` and `search` tools are confined to the working
+directory: `read` resolves symlinks and refuses anything that
+escapes it, and `search` considers regular files only. It also skips
+hidden files and directories the way ripgrep does, skips binary
+content, and caps its observation.
+
+**This is not an OS-level sandbox.** The shell command runs with the
+same user permissions and environment as `go-reins`; starting in the
+working directory does not prevent it from accessing other paths or
+the network. Approval is a confirmation gate, not isolation:
+`--yes` and a `tool-risk` override can bypass the prompt, but do not
+restrict command capabilities. Shell commands have a timeout and
+their captured output is capped, but these limits do not contain
+their effects. For untrusted commands, run `go-reins` inside an
+appropriately restricted OS account or container/VM; configure its
+filesystem mounts, privileges, and network access accordingly.
 
 ## Configuration
 
@@ -188,7 +197,7 @@ backend: ollama
 model: llama3.2
 tools: [read, shell]
 tool-risk:
-  shell: read-only   # sandboxed shell: no approval prompt
+  shell: read-only   # no approval prompt; does not sandbox the shell
 ```
 
 `tools` selects which tools the agent loads; `tool-risk` overrides
